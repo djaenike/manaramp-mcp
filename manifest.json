@@ -1,0 +1,21 @@
+{
+  "manifest_version": "0.2",
+  "name": "scryfall-mcp",
+  "version": "1.0.0",
+  "description": "Build cool decks with code",
+  "author": {
+    "name": "David Jaenike"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/index.js"
+      ],
+      "env": {}
+    }
+  },
+  "license": "MIT"
+}
