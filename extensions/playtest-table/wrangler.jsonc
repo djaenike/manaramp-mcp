@@ -1,0 +1,23 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "playtest-table",
+	"compatibility_date": "2026-08-04",
+	"compatibility_flags": [
+		"nodejs_als"
+	],
+	"main": ".svelte-kit/cloudflare/_worker.js",
+	"assets": {
+		"binding": "ASSETS",
+		"directory": ".svelte-kit/cloudflare"
+	},
+	"durable_objects": {
+		"bindings": [
+			{ "name": "GAME_ROOM", "class_name": "GameRoom" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["GameRoom"] }
+	],
+	"workers_dev": true,
+	"preview_urls": true
+}

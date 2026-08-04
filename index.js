@@ -8,6 +8,9 @@ import { z } from "zod";
 // Django REST Framework convention and matching their published syntax guide's
 // examples like card:"Sol Ring") is a strong inference, not a 100%-confirmed spec —
 // if searches come back empty, verify the param name against their live docs manually.
+// Scryfall is the official, documented MTG card database API — no API key needed.
+const SCRYFALL_BASE = "https://api.scryfall.com";
+
 const COMMANDER_SPELLBOOK_BASE = "https://backend.commanderspellbook.com";
 
 // EDHREC has no official API — this hits the same undocumented JSON endpoints

@@ -2,7 +2,7 @@
   "manifest_version": "0.2",
   "name": "scryfall-mcp",
   "version": "1.0.0",
-  "description": "Build cool decks with code",
+  "description": "Building magical decks",
   "author": {
     "name": "David Jaenike"
   },
