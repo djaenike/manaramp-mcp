@@ -6,6 +6,9 @@ export interface Card {
 	id: string;
 	name: string;
 	tapped?: boolean;
+	// Arbitrary counter types ("+1/+1", "loyalty", "poison", whatever) -> count. Absent/zero
+	// entries are cleaned up rather than kept at 0, so "has counters" is just "object has keys".
+	counters?: Record<string, number>;
 }
 
 export type ZoneName = 'command' | 'library' | 'hand' | 'battlefield' | 'graveyard' | 'exile';
@@ -35,9 +38,23 @@ export interface GameState {
 	active: PlayerKey;
 	log: LogEntry[];
 	players: Record<PlayerKey, PlayerState>;
+	// Grows every time any deck is imported into this room — never shrinks, never overwritten with
+	// worse data, so the second time a card shows up (even in a totally different deck) it's free.
+	cardInfo: Record<string, CardInfoEntry>;
 }
 
 export interface DeckEntry {
 	qty: number;
 	name: string;
+}
+
+// Resolved once (server-side, from Scryfall) whenever a deck is imported, then merged into the
+// room's shared GameState.cardInfo dictionary — individual Card instances only ever carry a name,
+// so this is the one place image/type/cost/text actually live, looked up by name at render time.
+export interface CardInfoEntry {
+	name: string;
+	image: string | null;
+	typeLine: string;
+	manaCost: string;
+	oracleText: string;
 }

@@ -16,13 +16,17 @@ function emptyPlayer(label: string): PlayerState {
 	};
 }
 
-function freshState(): GameState {
+// cardInfo defaults to {} for a brand-new room, but "Reset table" passes through whatever's
+// already been resolved — resetting the board shouldn't throw away Scryfall lookups you already
+// paid for, since cardInfo only ever grows and is never wrong to keep around.
+function freshState(cardInfo: GameState['cardInfo'] = {}): GameState {
 	return {
 		revision: 0,
 		turn: 1,
 		active: 'you',
 		log: [{ who: 'system', text: 'Table opened. Load a deck for each side, draw an opening hand, and play.' }],
-		players: { you: emptyPlayer('You'), ai: emptyPlayer('AI') }
+		players: { you: emptyPlayer('You'), ai: emptyPlayer('AI') },
+		cardInfo
 	};
 }
 
@@ -42,6 +46,7 @@ export class GameRoom {
 	ctx: DurableObjectState;
 	game: GameState | null = null;
 	idCounter = 0;
+	lastBatchErrors: { action: unknown; error: string }[] = [];
 
 	constructor(ctx: DurableObjectState) {
 		this.ctx = ctx;
@@ -51,6 +56,9 @@ export class GameRoom {
 		if (this.game) return this.game;
 		const stored = await this.ctx.storage.get<GameState>('game');
 		this.game = stored ?? freshState();
+		// Guards against state persisted before cardInfo existed — without this, the first
+		// Object.assign(this.game.cardInfo, ...) in loadDeck/addCard throws on old rooms.
+		this.game.cardInfo ??= {};
 		return this.game;
 	}
 
@@ -114,6 +122,7 @@ export class GameRoom {
 
 		console.log(`[room] action: ${msg.type} ${JSON.stringify(msg)}`);
 
+		this.lastBatchErrors = [];
 		try {
 			this.applyAction(msg);
 		} catch (e) {
@@ -121,6 +130,10 @@ export class GameRoom {
 			console.log(`[room] action failed: ${errMsg}`);
 			ws.send(JSON.stringify({ type: 'error', error: errMsg }));
 			return;
+		}
+
+		if (this.lastBatchErrors.length) {
+			ws.send(JSON.stringify({ type: 'batchErrors', errors: this.lastBatchErrors }));
 		}
 
 		await this.saveGame();
@@ -145,10 +158,34 @@ export class GameRoom {
 	applyAction(msg: any) {
 		const game = this.game!;
 		switch (msg.type) {
-			case 'moveCard':
-				return this.moveCard(msg.player, msg.cardId, msg.fromZone, msg.toZone);
-			case 'toggleTap':
-				return this.toggleTap(msg.player, msg.cardId);
+			case 'moveCard': {
+				const cardId = msg.cardId ?? this.findCardIdByName(msg.player, msg.fromZone, msg.cardName);
+				return this.moveCard(msg.player, cardId, msg.fromZone, msg.toZone);
+			}
+			case 'toggleTap': {
+				const cardId = msg.cardId ?? this.findCardIdByName(msg.player, 'battlefield', msg.cardName);
+				return this.toggleTap(msg.player, cardId);
+			}
+			case 'batch': {
+				// Applied in order, against the state as it exists after each prior step — so a
+				// batch like [play land by name, tap that same land by name] resolves correctly
+				// even though the land doesn't exist yet when the batch is sent. Doesn't throw on
+				// a failed sub-action; collects errors so the rest of the batch (and the final
+				// save+broadcast) still happens instead of silently discarding earlier progress.
+				const errors: { action: unknown; error: string }[] = [];
+				for (const sub of msg.actions ?? []) {
+					try {
+						this.applyAction(sub);
+					} catch (e) {
+						errors.push({ action: sub, error: e instanceof Error ? e.message : String(e) });
+					}
+				}
+				if (errors.length) {
+					console.log(`[room] batch had ${errors.length} failed sub-action(s): ${JSON.stringify(errors)}`);
+				}
+				this.lastBatchErrors = errors;
+				return;
+			}
 			case 'draw':
 				return this.draw(msg.player);
 			case 'shuffleLibrary':
@@ -162,11 +199,23 @@ export class GameRoom {
 			case 'passTurn':
 				return this.passTurn();
 			case 'loadDeck':
-				return this.loadDeck(msg.player, msg.commanderNames ?? [], msg.deckEntries ?? [], msg.sourceLabel ?? 'Loaded deck');
+				return this.loadDeck(
+					msg.player, msg.commanderNames ?? [], msg.deckEntries ?? [],
+					msg.sourceLabel ?? 'Loaded deck', msg.cardInfo ?? {}
+				);
 			case 'addCard':
-				return this.addCard(msg.player, msg.zone, msg.name);
+				return this.addCard(msg.player, msg.zone, msg.name, msg.cardInfo ?? {});
+			case 'removeCard': {
+				const cardId = msg.cardId ?? this.findCardIdByName(msg.player, msg.zone, msg.cardName);
+				return this.removeCard(msg.player, msg.zone, cardId);
+			}
+			case 'adjustCounter': {
+				const zone: ZoneName = msg.zone ?? 'battlefield';
+				const cardId = msg.cardId ?? this.findCardIdByName(msg.player, zone, msg.cardName);
+				return this.adjustCounter(msg.player, zone, cardId, msg.counterType, msg.delta);
+			}
 			case 'resetTable':
-				this.game = freshState();
+				this.game = freshState(this.game?.cardInfo ?? {});
 				return;
 			default:
 				throw new Error('unknown action: ' + msg.type);
@@ -181,6 +230,15 @@ export class GameRoom {
 
 	private zoneArr(key: PlayerKey, zone: ZoneName): Card[] {
 		return this.player(key)[zone];
+	}
+
+	private findCardIdByName(player: PlayerKey, zone: ZoneName, name: string): string {
+		const card = this.zoneArr(player, zone).find((c) => c.name.toLowerCase() === (name ?? '').toLowerCase());
+		if (!card) {
+			const have = this.zoneArr(player, zone).map((c) => c.name).join(', ') || 'nothing';
+			throw new Error(`no card named "${name}" in ${player}'s ${zone} (have: ${have})`);
+		}
+		return card.id;
 	}
 
 	moveCard(player: PlayerKey, cardId: string, fromZone: ZoneName, toZone: ZoneName) {
@@ -257,8 +315,13 @@ export class GameRoom {
 		this.addLog('system', `Turn passed — ${next === 'you' ? 'your' : "AI's"} turn (turn ${game.turn})`);
 	}
 
-	loadDeck(player: PlayerKey, commanderNames: string[], deckEntries: DeckEntry[], sourceLabel: string) {
+	loadDeck(
+		player: PlayerKey, commanderNames: string[], deckEntries: DeckEntry[], sourceLabel: string,
+		cardInfo: GameState['cardInfo'] = {}
+	) {
 		const p = this.player(player);
+		Object.assign(this.game!.cardInfo, cardInfo);
+
 		const command: Card[] = commanderNames.map((name) => ({ id: this.nextId(), name }));
 		const library: Card[] = [];
 		deckEntries.forEach((entry) => {
@@ -274,16 +337,43 @@ export class GameRoom {
 		p.exile = [];
 		p.mulligans = 0;
 
+		const unresolved = [...commanderNames, ...deckEntries.map((e) => e.name)]
+			.filter((n) => !this.game!.cardInfo[n.toLowerCase()]);
+		const note = unresolved.length ? ` (${unresolved.length} card(s) unresolved: ${unresolved.join(', ')})` : '';
 		this.addLog(
 			player,
-			`${sourceLabel} for ${p.label}: ${command.length} commander(s), ${library.length} library card(s).`
+			`${sourceLabel} for ${p.label}: ${command.length} commander(s), ${library.length} library card(s).${note}`
 		);
 	}
 
-	addCard(player: PlayerKey, zone: ZoneName, name: string) {
+	addCard(player: PlayerKey, zone: ZoneName, name: string, cardInfo: GameState['cardInfo'] = {}) {
 		if (!ALL_ZONES.includes(zone)) throw new Error('unknown zone: ' + zone);
+		Object.assign(this.game!.cardInfo, cardInfo);
 		const card: Card = { id: this.nextId(), name };
 		this.zoneArr(player, zone).push(card);
 		this.addLog(player, `${name} added to ${zone}.`);
+	}
+
+	// For tokens that leave play (real Magic tokens cease to exist once they change zones) or
+	// general cleanup — deletes the card outright rather than moving it somewhere else.
+	removeCard(player: PlayerKey, zone: ZoneName, cardId: string) {
+		const arr = this.zoneArr(player, zone);
+		const idx = arr.findIndex((c) => c.id === cardId);
+		if (idx === -1) return;
+		const [card] = arr.splice(idx, 1);
+		this.addLog(player, `${card.name} removed from ${zone}.`);
+	}
+
+	adjustCounter(player: PlayerKey, zone: ZoneName, cardId: string, counterType: string, delta: number) {
+		const n = Number(delta);
+		if (!Number.isInteger(n) || n === 0) throw new Error('delta must be a non-zero integer');
+		if (!counterType) throw new Error('counterType is required');
+		const card = this.zoneArr(player, zone).find((c) => c.id === cardId);
+		if (!card) throw new Error(`card not found in ${player}'s ${zone}`);
+		card.counters ??= {};
+		const next = (card.counters[counterType] ?? 0) + n;
+		if (next <= 0) delete card.counters[counterType];
+		else card.counters[counterType] = next;
+		this.addLog(player, `${card.name}: ${n > 0 ? '+' : ''}${n} ${counterType} counter(s) (now ${card.counters[counterType] ?? 0}).`);
 	}
 }

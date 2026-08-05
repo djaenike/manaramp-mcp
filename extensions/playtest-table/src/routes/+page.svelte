@@ -6,19 +6,23 @@
 	// us most recently."
 	type ZoneName = 'command' | 'library' | 'hand' | 'battlefield' | 'graveyard' | 'exile';
 	type PlayerKey = 'you' | 'ai';
-	interface Card { id: string; name: string; tapped?: boolean }
+	interface Card { id: string; name: string; tapped?: boolean; counters?: Record<string, number> }
 	interface PlayerState {
 		label: string; life: number;
 		command: Card[]; library: Card[]; hand: Card[]; battlefield: Card[]; graveyard: Card[]; exile: Card[];
 		mulligans: number;
 	}
+	interface CardInfoEntry { name: string; image: string | null; typeLine: string; manaCost?: string; oracleText?: string }
+	interface ResolveDeckResponse { cardInfo: Record<string, CardInfoEntry>; notFound: string[]; error?: string }
+	interface RandomDeckResponse extends ResolveDeckResponse {
+		commander: string[]; deckEntries: { qty: number; name: string }[]; sourceCommander: string;
+	}
 	interface GameState {
 		revision: number; turn: number; active: PlayerKey;
 		log: { who: PlayerKey | 'system'; text: string }[];
 		players: Record<PlayerKey, PlayerState>;
+		cardInfo: Record<string, CardInfoEntry>;
 	}
-	interface CardDbEntry { name: string; image: string | null; typeLine: string }
-	interface DeckPreset { id: string; label: string; commander: string[]; deck: { qty: number; name: string }[] }
 
 	const ROOM_ID = 'default';
 	const ZONE_LABELS: Record<ZoneName, string> = {
@@ -26,8 +30,6 @@
 		graveyard: 'Graveyard', exile: 'Exile', library: 'Library (top)'
 	};
 
-	let cardDb: Record<string, CardDbEntry> = $state({});
-	let presets: DeckPreset[] = $state([]);
 	let game: GameState | null = $state(null);
 	let connStatus = $state('connecting');
 	let statusMsg = $state('');
@@ -36,20 +38,47 @@
 	let importOpen = $state(false);
 	let importPlayer: PlayerKey = $state('you');
 	let importText = $state('');
-	let presetIndex = $state(0);
+	let importBusy = $state(false);
+	let randomCommanderInput = $state('');
 
 	let cardInput = $state('');
 	let addPlayer: PlayerKey = $state('you');
 	let addZone: ZoneName = $state('battlefield');
 
-	let zoomCard: CardDbEntry | null = $state(null);
+	let zoomCard: CardInfoEntry | null = $state(null);
 	let zoneMenu: { player: PlayerKey; zone: ZoneName; cardId: string; name: string; x: number; y: number } | null = $state(null);
 
 	let resetArmed = $state(false);
 	let resetTimer: ReturnType<typeof setTimeout> | null = null;
 
-	function lookupCard(name: string): CardDbEntry | null {
-		return cardDb[name.trim().toLowerCase()] ?? null;
+	// Card art/type/cost/text all live in the room's own shared state now (resolved once at
+	// import time via /api/resolve-deck or /api/random-deck), not a static file this page fetches —
+	// so lookups here just read whatever the server has already told us.
+	function lookupCard(name: string): CardInfoEntry | null {
+		return game?.cardInfo[name.trim().toLowerCase()] ?? null;
+	}
+
+	// Ordered so the battlefield reads the way a physical table does: lands along the bottom of
+	// each player's zone, then the things that actually attack/block, then support permanents.
+	const CATEGORY_ORDER = ['Land', 'Creature', 'Planeswalker', 'Enchantment', 'Artifact', 'Other'] as const;
+
+	function categorize(name: string): (typeof CATEGORY_ORDER)[number] {
+		const typeLine = lookupCard(name)?.typeLine ?? '';
+		if (typeLine.includes('Land')) return 'Land';
+		if (typeLine.includes('Creature')) return 'Creature';
+		if (typeLine.includes('Planeswalker')) return 'Planeswalker';
+		if (typeLine.includes('Enchantment')) return 'Enchantment';
+		if (typeLine.includes('Artifact')) return 'Artifact';
+		return 'Other';
+	}
+
+	function groupByCategory(cards: Card[]): Partial<Record<(typeof CATEGORY_ORDER)[number], Card[]>> {
+		const groups: Partial<Record<(typeof CATEGORY_ORDER)[number], Card[]>> = {};
+		for (const c of cards) {
+			const cat = categorize(c.name);
+			(groups[cat] ??= []).push(c);
+		}
+		return groups;
 	}
 
 	function send(action: Record<string, unknown>) {
@@ -71,8 +100,6 @@
 	}
 
 	$effect(() => {
-		fetch('/deck-data/card-db.json').then((r) => r.json()).then((d) => { cardDb = d as Record<string, CardDbEntry>; });
-		fetch('/deck-data/presets.json').then((r) => r.json()).then((d) => { presets = d as DeckPreset[]; });
 		connect();
 		return () => ws?.close();
 	});
@@ -96,12 +123,27 @@
 	function closeZoom() { zoomCard = null; }
 
 	// --- toolbar / import actions ------------------------------------------------------------
-	function submitAddCard(e: Event) {
+	// Every card that enters the game — added ad hoc, pasted as a decklist, or pulled randomly
+	// from EDHREC — goes through the same server-side resolve step so it always ends up with real
+	// art/type/cost/text, not just a name.
+	async function submitAddCard(e: Event) {
 		e.preventDefault();
 		const name = cardInput.trim();
 		if (!name) return;
-		send({ type: 'addCard', player: addPlayer, zone: addZone, name });
-		cardInput = '';
+		statusMsg = `Resolving "${name}"...`;
+		try {
+			const res = await fetch('/api/resolve-deck', {
+				method: 'POST', headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ deckEntries: [{ qty: 1, name }] })
+			});
+			const data = (await res.json()) as ResolveDeckResponse;
+			if (data.error) throw new Error(data.error);
+			send({ type: 'addCard', player: addPlayer, zone: addZone, name, cardInfo: data.cardInfo });
+			statusMsg = data.notFound?.length ? `"${name}" not found on Scryfall — added as text only.` : '';
+			cardInput = '';
+		} catch (e) {
+			statusMsg = e instanceof Error ? e.message : String(e);
+		}
 	}
 
 	function parseDecklist(text: string) {
@@ -128,37 +170,62 @@
 		return { commanderNames, deckEntries };
 	}
 
-	function submitImport() {
+	async function submitImport() {
 		const { commanderNames, deckEntries } = parseDecklist(importText);
 		if (!commanderNames.length && !deckEntries.length) {
 			statusMsg = 'No cards found in pasted text.';
 			return;
 		}
-		send({ type: 'loadDeck', player: importPlayer, commanderNames, deckEntries, sourceLabel: 'Imported deck' });
-		importText = '';
-	}
-
-	function loadPreset() {
-		const preset = presets[presetIndex];
-		if (!preset) return;
-		send({
-			type: 'loadDeck', player: importPlayer,
-			commanderNames: preset.commander, deckEntries: preset.deck,
-			sourceLabel: `Loaded preset "${preset.label}"`
-		});
-	}
-
-	function randomDeck() {
-		const names = Object.values(cardDb).map((c) => c.name);
-		if (!names.length) { statusMsg = 'No cards known yet.'; return; }
-		const pool = [...names];
-		for (let i = pool.length - 1; i > 0; i--) {
-			const j = Math.floor(Math.random() * (i + 1));
-			[pool[i], pool[j]] = [pool[j], pool[i]];
+		importBusy = true;
+		statusMsg = `Resolving ${commanderNames.length + deckEntries.length} card(s) against Scryfall...`;
+		try {
+			const res = await fetch('/api/resolve-deck', {
+				method: 'POST', headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ commanderNames, deckEntries })
+			});
+			const data = (await res.json()) as ResolveDeckResponse;
+			if (data.error) throw new Error(data.error);
+			send({
+				type: 'loadDeck', player: importPlayer, commanderNames, deckEntries,
+				sourceLabel: 'Imported deck', cardInfo: data.cardInfo
+			});
+			statusMsg = data.notFound?.length
+				? `Loaded — ${data.notFound.length} card(s) not found on Scryfall: ${data.notFound.join(', ')}`
+				: 'Deck resolved and loaded.';
+			importText = '';
+		} catch (e) {
+			statusMsg = e instanceof Error ? e.message : String(e);
+		} finally {
+			importBusy = false;
 		}
-		const n = Math.min(60, pool.length);
-		const deckEntries = pool.slice(0, n).map((name) => ({ qty: 1, name }));
-		send({ type: 'loadDeck', player: importPlayer, commanderNames: [], deckEntries, sourceLabel: `Generated a random ${n}-card test deck` });
+	}
+
+	async function randomDeck() {
+		importBusy = true;
+		const requested = randomCommanderInput.trim();
+		statusMsg = requested ? `Pulling EDHREC's average build for "${requested}"...` : 'Picking a random commander and pulling its EDHREC average build...';
+		try {
+			const res = await fetch('/api/random-deck', {
+				method: 'POST', headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(requested ? { commander: requested } : {})
+			});
+			const data = (await res.json()) as RandomDeckResponse;
+			if (data.error) throw new Error(data.error);
+			send({
+				type: 'loadDeck', player: importPlayer,
+				commanderNames: data.commander, deckEntries: data.deckEntries,
+				sourceLabel: `Random deck: EDHREC average build for "${data.sourceCommander}"`,
+				cardInfo: data.cardInfo
+			});
+			statusMsg = data.notFound?.length
+				? `Loaded "${data.sourceCommander}" — ${data.notFound.length} card(s) not found: ${data.notFound.join(', ')}`
+				: `Loaded "${data.sourceCommander}".`;
+			randomCommanderInput = '';
+		} catch (e) {
+			statusMsg = e instanceof Error ? e.message : String(e);
+		} finally {
+			importBusy = false;
+		}
 	}
 
 	function clickReset() {
@@ -220,16 +287,12 @@
 		</div>
 		<textarea rows="8" bind:value={importText} placeholder={'Commander\n1 Zada, Hedron Grinder\n\nDeck\n1 Sol Ring\n30 Mountain'}></textarea>
 		<div class="import-row">
-			<button type="button" class="btn primary" onclick={submitImport}>Parse &amp; load deck</button>
+			<button type="button" class="btn primary" disabled={importBusy} onclick={submitImport}>Parse &amp; load deck</button>
 		</div>
 		<div class="import-row divider">
-			<select bind:value={presetIndex}>
-				{#each presets as preset, i}
-					<option value={i}>{preset.label}</option>
-				{/each}
-			</select>
-			<button type="button" class="btn" onclick={loadPreset}>Load preset</button>
-			<button type="button" class="btn" onclick={randomDeck}>Random test deck</button>
+			<input type="text" bind:value={randomCommanderInput} placeholder="Commander name (blank = random)" />
+			<button type="button" class="btn" disabled={importBusy} onclick={randomDeck}>Random deck from EDHREC</button>
+			<span class="import-hint">Pulls a real decklist off the internet &mdash; EDHREC's average build for the named commander, or a random one from a small curated pool if left blank.</span>
 		</div>
 	</div>
 {/if}
@@ -353,26 +416,41 @@
 
 		{@render playerRow('ai')}
 
+		{#snippet battlefieldCardChip(key: PlayerKey, c: Card)}
+			<div class="card-chip bf-card {c.tapped ? 'tapped' : ''}">
+				<button class="chip-main" onclick={() => send({ type: 'toggleTap', player: key, cardId: c.id })} title={c.name}>
+					{@render cardImg(c.name)}
+					<span class="cname">{c.name}</span>
+					{#if c.counters && Object.keys(c.counters).length}
+						<span class="counter-badge">{Object.entries(c.counters).map(([t, n]) => `${n} ${t}`).join(', ')}</span>
+					{/if}
+				</button>
+				<button class="menu-btn zoom-btn" onclick={(e) => { e.stopPropagation(); openZoom(c.name); }} title="View larger">&#128269;</button>
+				<button class="menu-btn" onclick={(e) => { e.stopPropagation(); openZoneMenu(key, 'battlefield', c, e.currentTarget); }} title="Move to another zone">&#8942;</button>
+			</div>
+		{/snippet}
+
 		<div class="shared-battlefield">
 			{#each (['ai', 'you'] as PlayerKey[]) as key}
 				{@const p = game.players[key]}
+				{@const groups = groupByCategory(p.battlefield)}
 				<div class="sb-half">
 					<div class="sb-label">{key === 'ai' ? 'AI' : 'Your'} battlefield &middot; {p.battlefield.length} permanent(s)</div>
 					{#if !p.battlefield.length}
 						<div class="empty-hint">No permanents in play</div>
 					{:else}
-						<div class="card-grid">
-							{#each p.battlefield as c (c.id)}
-								<div class="card-chip {c.tapped ? 'tapped' : ''}">
-									<button class="chip-main" onclick={() => send({ type: 'toggleTap', player: key, cardId: c.id })} title={c.name}>
-										{@render cardImg(c.name)}
-										<span class="cname">{c.name}</span>
-									</button>
-									<button class="menu-btn zoom-btn" onclick={(e) => { e.stopPropagation(); openZoom(c.name); }} title="View larger">&#128269;</button>
-									<button class="menu-btn" onclick={(e) => { e.stopPropagation(); openZoneMenu(key, 'battlefield', c, e.currentTarget); }} title="Move to another zone">&#8942;</button>
+						{#each CATEGORY_ORDER as cat}
+							{#if groups[cat]?.length}
+								<div class="bf-category">
+									<div class="bf-cat-label">{cat} ({groups[cat].length})</div>
+									<div class="card-grid">
+										{#each groups[cat] as c (c.id)}
+											{@render battlefieldCardChip(key, c)}
+										{/each}
+									</div>
 								</div>
-							{/each}
-						</div>
+							{/if}
+						{/each}
 					{/if}
 				</div>
 				{#if key === 'ai'}<div class="sb-divider"></div>{/if}
@@ -401,6 +479,11 @@
 				<button onclick={() => moveTo(zone as ZoneName)}>&rarr; {label}</button>
 			{/if}
 		{/each}
+		{#if zoneMenu.zone === 'battlefield'}
+			<div class="zone-menu-divider"></div>
+			<button onclick={() => { send({ type: 'adjustCounter', player: zoneMenu!.player, cardId: zoneMenu!.cardId, counterType: '+1/+1', delta: 1 }); closeZoneMenu(); }}>+1/+1 counter</button>
+			<button onclick={() => { send({ type: 'adjustCounter', player: zoneMenu!.player, cardId: zoneMenu!.cardId, counterType: '+1/+1', delta: -1 }); closeZoneMenu(); }}>&minus;1/&minus;1 counter</button>
+		{/if}
 	</div>
 {/if}
 
@@ -461,7 +544,7 @@
 	.status-line { font-size: 0.82rem; color: var(--danger); padding: 0 0.2rem; }
 
 	.search-form { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
-	.search-form input[type='text'] {
+	.search-form input[type='text'], .import-row input[type='text'] {
 		background: var(--surface-slot); border: 1px solid var(--border); border-radius: 7px; color: var(--fg);
 		padding: 0.45rem 0.65rem; font-size: 0.88rem; width: 15rem; max-width: 40vw;
 	}
@@ -469,6 +552,7 @@
 		background: var(--surface-slot); border: 1px solid var(--border); border-radius: 7px; color: var(--fg);
 		padding: 0.45rem 0.5rem; font-size: 0.82rem;
 	}
+	.btn:disabled { opacity: 0.55; cursor: not-allowed; }
 	.btn {
 		background: var(--surface-slot); border: 1px solid var(--border); border-radius: 7px; color: var(--fg);
 		padding: 0.45rem 0.75rem; font-size: 0.82rem;
@@ -531,6 +615,11 @@
 	.text-fallback.large { aspect-ratio: 5/7; font-size: 1rem; }
 	.cname { font-size: 0.6rem; padding: 0.2rem 0.3rem; line-height: 1.15; color: var(--fg); background: rgba(0,0,0,0.35); position: absolute; bottom: 0; left: 0; right: 0; }
 	.mini .cname { display: none; }
+	.counter-badge {
+		position: absolute; top: 0.15rem; left: 50%; transform: translateX(-50%);
+		font-size: 0.58rem; font-weight: 600; line-height: 1; padding: 0.15rem 0.35rem;
+		border-radius: 999px; background: var(--accent); color: var(--ink-950); white-space: nowrap;
+	}
 	.menu-btn {
 		position: absolute; top: 0.15rem; right: 0.15rem; width: 1.1rem; height: 1.1rem; border-radius: 4px;
 		background: rgba(0,0,0,0.5); color: #fff; border: none; font-size: 0.65rem;
@@ -539,10 +628,13 @@
 	.menu-btn.zoom-btn { left: 0.15rem; right: auto; }
 	.empty-hint { font-size: 0.76rem; color: var(--fg-dim); font-style: italic; padding: 0.3rem 0.1rem; }
 
-	.shared-battlefield { padding: 0.7rem 0.9rem; display: flex; flex-direction: column; gap: 0.5rem; }
-	.sb-half { min-height: 4.5rem; }
-	.sb-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-dim); margin-bottom: 0.35rem; }
-	.sb-divider { height: 1px; background: var(--border); }
+	.shared-battlefield { padding: 1.1rem 1.3rem; display: flex; flex-direction: column; gap: 0.9rem; }
+	.sb-half { min-height: 11rem; display: flex; flex-direction: column; gap: 0.65rem; }
+	.sb-label { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-dim); }
+	.sb-divider { height: 1px; background: var(--border); margin: 0.2rem 0; }
+	.bf-category { display: flex; flex-direction: column; gap: 0.35rem; }
+	.bf-cat-label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-dim); opacity: 0.75; }
+	.bf-card { width: 6rem; }
 
 	.side-zones { display: flex; flex-direction: column; gap: 0.6rem; }
 	.mini-zone { background: var(--surface-slot); border: 1px solid var(--border); border-radius: 9px; padding: 0.5rem 0.6rem; flex: 1; }
@@ -570,6 +662,7 @@
 	.zone-menu-title { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-dim); padding: 0.25rem 0.55rem 0.35rem; border-bottom: 1px solid var(--border); margin-bottom: 0.15rem; }
 	.zone-menu button { text-align: left; background: transparent; border: none; color: var(--fg); padding: 0.4rem 0.55rem; font-size: 0.8rem; border-radius: 5px; }
 	.zone-menu button:hover { background: var(--surface-slot); }
+	.zone-menu-divider { height: 1px; background: var(--border); margin: 0.15rem 0; }
 
 	.card-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 2rem; }
 	.card-modal { background: var(--surface-zone); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; max-width: min(90vw, 26rem); max-height: 90vh; display: flex; flex-direction: column; gap: 0.6rem; }
