@@ -5,6 +5,9 @@
 // This script's only job is to make sure that exit happens at the right moment.
 
 const ROOM_URL = process.env.ROOM_URL || 'ws://127.0.0.1:8787/api/room/default';
+// Which seat id to wait on — rooms created via the lobby have arbitrary seat ids (seat0, seat1,
+// ...), not always literally 'ai'. Defaults to 'ai' so the old default-room workflow is unchanged.
+const WATCH_SEAT = process.env.WATCH_SEAT || 'ai';
 
 // process.exit() right after console.log races with stdout when it's redirected to a file (as it
 // always is here, since this runs backgrounded) — flushing via the write callback first avoids
@@ -36,7 +39,7 @@ function waitForAiTurn(ws) {
 				return;
 			}
 			if (msg.type !== 'state') return;
-			if (msg.state.active === 'ai') {
+			if (msg.state.active === WATCH_SEAT) {
 				ws.removeEventListener('message', handler);
 				resolve(msg.state);
 			}
@@ -53,13 +56,19 @@ function describeCard(c) {
 	return bits.join(' ');
 }
 
+function describeHandCard(c, cardInfo) {
+	const info = cardInfo?.[c.name.toLowerCase()];
+	return info?.manaCost ? `${c.name} ${info.manaCost}` : c.name;
+}
+
 function summarize(state) {
+	const cardInfo = state.cardInfo || {};
 	const lines = [];
-	lines.push(`It's the AI's turn (turn ${state.turn}).`);
-	for (const key of ['you', 'ai']) {
+	lines.push(`It's ${WATCH_SEAT}'s turn (turn ${state.turn}).`);
+	for (const key of Object.keys(state.players)) {
 		const p = state.players[key];
 		lines.push(
-			`${key} — life ${p.life} | hand (${p.hand.length}): [${p.hand.map((c) => c.name).join(', ')}] | ` +
+			`${key} — life ${p.life} | hand (${p.hand.length}): [${p.hand.map((c) => describeHandCard(c, cardInfo)).join(', ')}] | ` +
 			`battlefield: [${p.battlefield.map(describeCard).join(', ')}]`
 		);
 	}
@@ -69,7 +78,7 @@ function summarize(state) {
 }
 
 async function main() {
-	console.log('watching', ROOM_URL, '— waiting for active === "ai" ...');
+	console.log('watching', ROOM_URL, `— waiting for active === "${WATCH_SEAT}" ...`);
 	const ws = await connect();
 	const state = await waitForAiTurn(ws);
 	ws.close();

@@ -1,7 +1,6 @@
-// Server-side card representation deliberately excludes image/typeLine — art and type text are
-// a pure rendering concern the Svelte client resolves itself from the static card-db.json by
-// name, so the Durable Object's persisted state (and every state broadcast) stays small and has
-// nothing to do with Scryfall art at all.
+// Server-side card representation deliberately excludes image/typeLine — those live in
+// GameState.cardInfo (see CardInfoEntry below), keyed by name, so individual Card instances in a
+// zone stay lightweight and the same card's art/text isn't duplicated everywhere it appears.
 export interface Card {
 	id: string;
 	name: string;
@@ -25,7 +24,19 @@ export interface PlayerState {
 	mulligans: number;
 }
 
-export type PlayerKey = 'you' | 'ai';
+// An opaque seat identifier — no longer a closed 2-value union. The set of valid keys for a given
+// room is whatever GameState.seats contains; GameRoom.player() is the runtime guard, not the type.
+export type PlayerKey = string;
+
+// Static-ish per-seat metadata, plus one bit of live state (claimedBy) that changes as browsers
+// claim/release it. Order in GameState.seats IS turn order IS render order — no separate ordering
+// field needed.
+export interface SeatDef {
+	id: string;
+	label: string;
+	controller: 'human' | 'ai';
+	claimedBy: string | null;
+}
 
 export interface LogEntry {
 	who: PlayerKey | 'system';
@@ -37,6 +48,7 @@ export interface GameState {
 	turn: number;
 	active: PlayerKey;
 	log: LogEntry[];
+	seats: SeatDef[];
 	players: Record<PlayerKey, PlayerState>;
 	// Grows every time any deck is imported into this room — never shrinks, never overwritten with
 	// worse data, so the second time a card shows up (even in a totally different deck) it's free.

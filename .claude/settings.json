@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e ' *)",
+      "Bash(node --check index.js)",
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\);process.stdin.on\\('end',\\(\\)=>{const r=JSON.parse\\(d\\);r.forEach\\(x=>console.log\\(x.roomId,'|',x.label\\)\\)}\\)\")",
+      "Bash(curl -s \"https://json.edhrec.com/pages/average-decks/golos-tireless-pilgrim.json\" -H \"User-Agent: scryfall-mcp-playtest/1.0\" -H \"Accept: application/json\" -o \"C:\\\\Users\\\\djaenike\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-djaenike-OneDrive---Archaea-Energy-Desktop-Claude-Projects-scryfall-mcp\\\\225f98ed-682c-436a-8b2b-1a0c8ad06aea\\\\scratchpad\\\\golos.json\")",
+      "Bash(node \"C:\\\\Users\\\\djaenike\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-djaenike-OneDrive---Archaea-Energy-Desktop-Claude-Projects-scryfall-mcp\\\\225f98ed-682c-436a-8b2b-1a0c8ad06aea\\\\scratchpad\\\\verify_mcp_tools.mjs\")",
+      "WebFetch(domain:magic.wizards.com)",
+      "WebFetch(domain:mtg.wiki)",
+      "WebFetch(domain:edhrec.com)",
+      "WebFetch(domain:scrollvault.net)",
+      "WebFetch(domain:www.mtggoldfish.com)",
+      "WebFetch(domain:commanderbrackets.com)",
+      "WebFetch(domain:spellweave.app)",
+      "Bash(node \"C:\\\\Users\\\\djaenike\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-djaenike-OneDrive---Archaea-Energy-Desktop-Claude-Projects-scryfall-mcp\\\\225f98ed-682c-436a-8b2b-1a0c8ad06aea\\\\scratchpad\\\\verify_bracket_tool.mjs\")"
+    ]
+  }
+}

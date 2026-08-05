@@ -4,10 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A local MCP (Model Context Protocol) server, entirely in `index.js` (~540 lines, ESM, no build step, no
+A local MCP (Model Context Protocol) server, entirely in `index.js` (~1050 lines, ESM, no build step, no
 tests, no lint config). It runs over stdio and is spawned as a subprocess by Claude Desktop / Claude Code.
-It exposes 10 tools that let Claude reason over live Magic: The Gathering data instead of guessing from
-training data.
+It exposes 16 tools: 10 let Claude reason over live Magic: The Gathering data instead of guessing from
+training data, 5 (`playtest_*`) drive a companion local playtest server, and 1 (`rate_deck_bracket`) is a
+deterministic classifier against the Commander Format Panel's official Bracket System — see below and
+`extensions/README.md`.
 
 ## Commands
 
@@ -57,6 +59,23 @@ of the caveats in tool descriptions and error messages:
 - **Commander Spellbook** (`find_combos`) — official REST API, MIT licensed, but the exact query
   parameter (`q`) is inferred from a syntax guide rather than confirmed against live docs (their docs site
   blocks automated fetching).
+- **playtest-table** (`playtest_list_games`, `playtest_create_table`, `playtest_get_state`,
+  `playtest_load_deck`, `playtest_do_action`) — NOT a public API at all: a companion local dev server
+  (`extensions/playtest-table`, SvelteKit + Cloudflare Durable Objects) that must be running
+  (`npx wrangler dev --port 8787` from that directory) before any of these 5 tools work. Every one
+  fails fast with an actionable message if it isn't. `PLAYTEST_SERVER_URL` overrides the default
+  `http://127.0.0.1:8787`. See `extensions/README.md` for what this actually is and its own further
+  Claude-Code-only conveniences (CLI scripts, a turn-notification auto-wake loop) that these 5 tools
+  don't replace — they're the subset that also works from Claude Desktop, which has no Bash tool or
+  background-task notifications to run those with.
+- **Commander Bracket System** (`rate_deck_bracket`) — not a live data source at all: `GAME_CHANGERS`,
+  `MASS_LAND_DENIAL_CARDS`, and `EXTRA_TURN_CARDS` are hardcoded reference lists (Game Changers current
+  as of the Feb 9, 2026 update, reviewed by the Commander Format Panel roughly every 3-4 months —
+  re-verify against WotC's own list if a rating looks off). Combo detection reuses Commander Spellbook
+  (same caveats as `find_combos`) but queries **one card at a time** — empirically confirmed this
+  session that Commander Spellbook's `or` keyword is accepted syntax but does NOT behave as boolean OR
+  (two individually-valid single-card queries can combine via `or` into zero results), so don't
+  reintroduce a batched-OR "optimization" here without re-verifying it against the live API first.
 
 `build_budget_deck` is the composite tool: it pulls a commander's full EDHREC card pool, cross-references
 every candidate against Card Kingdom's full pricelist, and greedily fills 99 slots by synergy-per-dollar
@@ -71,11 +90,11 @@ Two name-normalization helpers are shared across tools and are a common source o
 `HEADERS` (User-Agent + Accept) is sent on every outbound fetch — Scryfall in particular rejects requests
 without an accurate User-Agent.
 
-## Known issue
-
-`SCRYFALL_BASE` is referenced in `search_cards`, `get_card_by_name`, and `get_rulings` (index.js:77,
-120, 154) but is never declared anywhere in the file — only `EDHREC_BASE`, `FORGE_RAW_BASE`,
-`CARDKINGDOM_PRICELIST_URL`, and `COMMANDER_SPELLBOOK_BASE` are defined. Calling any of those three
-Scryfall tools currently throws a `ReferenceError`. If you touch any Scryfall-backed tool, add the missing
-`const SCRYFALL_BASE = "https://api.scryfall.com"` alongside the other base-URL constants near the top of
-the file.
+The 5 `playtest_*` tools are the one place this file's usual "one-shot HTTP GET" shape doesn't apply —
+they need a real connect→send→await→close websocket lifecycle plus a connection timeout (a refused
+connection, i.e. wrangler dev not running, is the *expected* common case here, unlike the public APIs the
+other 10 tools hit). `connectRoom`/`sendAndAwait`/`withRoom` (ported from
+`extensions/playtest-table/scripts/play.js`, the pre-existing Claude-Code CLI for this same protocol)
+centralize that lifecycle so it's written once, not once per tool. `playtest_do_action`'s `type` field is
+also this file's first use of `z.enum(...)` — the wire-protocol action vocabulary is small and closed
+enough to validate directly rather than leaving it as a free-form string.

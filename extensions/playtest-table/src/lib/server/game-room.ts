@@ -1,6 +1,15 @@
-import type { Card, DeckEntry, GameState, PlayerKey, PlayerState, ZoneName } from './types';
+import type { Card, DeckEntry, GameState, PlayerKey, PlayerState, SeatDef, ZoneName } from './types';
+import { RANDOM_COMMANDERS, fetchEdhrecAverageDeck, resolveCardInfo } from './deck-resolve';
 
 const ALL_ZONES: ZoneName[] = ['command', 'library', 'hand', 'battlefield', 'graveyard', 'exile'];
+
+// Fallback shape for a room that's never been seeded via the lobby's /init call (e.g. hit
+// directly by an old habit or a script against a fresh room id) — reproduces the original
+// you-vs-ai board exactly.
+const DEFAULT_SEATS: SeatDef[] = [
+	{ id: 'you', label: 'You', controller: 'human', claimedBy: null },
+	{ id: 'ai', label: 'AI', controller: 'ai', claimedBy: null }
+];
 
 function emptyPlayer(label: string): PlayerState {
 	return {
@@ -19,13 +28,14 @@ function emptyPlayer(label: string): PlayerState {
 // cardInfo defaults to {} for a brand-new room, but "Reset table" passes through whatever's
 // already been resolved — resetting the board shouldn't throw away Scryfall lookups you already
 // paid for, since cardInfo only ever grows and is never wrong to keep around.
-function freshState(cardInfo: GameState['cardInfo'] = {}): GameState {
+function freshState(seats: SeatDef[] = DEFAULT_SEATS, cardInfo: GameState['cardInfo'] = {}): GameState {
 	return {
 		revision: 0,
 		turn: 1,
-		active: 'you',
+		active: seats[0].id,
 		log: [{ who: 'system', text: 'Table opened. Load a deck for each side, draw an opening hand, and play.' }],
-		players: { you: emptyPlayer('You'), ai: emptyPlayer('AI') },
+		seats,
+		players: Object.fromEntries(seats.map((s) => [s.id, emptyPlayer(s.label)])),
 		cardInfo
 	};
 }
@@ -44,18 +54,34 @@ function shuffle<T>(arr: T[]): void {
 // without needing its own copy of the mutation logic.
 export class GameRoom {
 	ctx: DurableObjectState;
+	env: Env;
 	game: GameState | null = null;
 	idCounter = 0;
 	lastBatchErrors: { action: unknown; error: string }[] = [];
 
-	constructor(ctx: DurableObjectState) {
+	constructor(ctx: DurableObjectState, env: Env) {
 		this.ctx = ctx;
+		this.env = env;
+	}
+
+	// Best-effort push to the lobby registry so /lobby can show "1 seat taken, 1 open" without
+	// asking every room directly. this.ctx.id.name recovers the roomId string this instance was
+	// addressed by (only populated when the id came from idFromName, which is always true here).
+	// Never lets a registry hiccup break the actual claim/release action — it already happened.
+	private notifyLobby(seatId: string, claimedBy: string | null, label?: string) {
+		const roomId = this.ctx.id.name;
+		if (!roomId || !this.env?.LOBBY) return;
+		const stub = this.env.LOBBY.get(this.env.LOBBY.idFromName('singleton'));
+		stub.fetch('http://lobby/seat-update', {
+			method: 'POST',
+			body: JSON.stringify({ roomId, seatId, claimedBy, label })
+		}).catch(() => {});
 	}
 
 	async loadGame(): Promise<GameState> {
 		if (this.game) return this.game;
 		const stored = await this.ctx.storage.get<GameState>('game');
-		this.game = stored ?? freshState();
+		this.game = stored && Array.isArray(stored.seats) ? stored : freshState(DEFAULT_SEATS, stored?.cardInfo ?? {});
 		// Guards against state persisted before cardInfo existed — without this, the first
 		// Object.assign(this.game.cardInfo, ...) in loadDeck/addCard throws on old rooms.
 		this.game.cardInfo ??= {};
@@ -64,6 +90,42 @@ export class GameRoom {
 
 	async saveGame() {
 		if (this.game) await this.ctx.storage.put('game', this.game);
+	}
+
+	// Idempotent on purpose: the lobby's create route calls this right after allocating a
+	// roomId, but if the room somehow already has saved state, seeding it again must not clobber
+	// an in-progress game.
+	async initSeats(seats: SeatDef[]) {
+		const stored = await this.ctx.storage.get<GameState>('game');
+		if (stored && Array.isArray(stored.seats)) {
+			this.game = stored;
+			this.game.cardInfo ??= {};
+			return;
+		}
+		this.game = freshState(seats, stored?.cardInfo ?? {});
+		// AI seats get a real deck (and an opening hand) immediately — "Me vs AI"/"AI vs AI" shouldn't
+		// start with an empty board waiting on someone to manually load one via chat/CLI first.
+		for (const seat of seats) {
+			if (seat.controller === 'ai') await this.autoLoadRandomDeck(seat.id);
+		}
+		await this.saveGame();
+	}
+
+	// Best-effort: a failed Scryfall/EDHREC lookup just logs and leaves that seat empty rather than
+	// blocking room creation entirely. Also reused whenever a deck needs to be changed later (a
+	// human clicking "New random deck" on an AI seat sends the exact same loadDeck action this
+	// produces, just from the browser instead of at seed time).
+	private async autoLoadRandomDeck(seatId: string, commanderName?: string) {
+		try {
+			const pick = commanderName || RANDOM_COMMANDERS[Math.floor(Math.random() * RANDOM_COMMANDERS.length)];
+			const { commander, deckEntries } = await fetchEdhrecAverageDeck(pick);
+			const names = [...commander, ...deckEntries.map((e) => e.name)];
+			const { cardInfo } = await resolveCardInfo(names);
+			this.loadDeck(seatId, commander, deckEntries, `Random deck: EDHREC average build for "${pick}"`, cardInfo);
+			this.openingHand(seatId);
+		} catch (e) {
+			this.addLog('system', `Couldn't auto-load a deck for ${seatId}: ${e instanceof Error ? e.message : String(e)}`);
+		}
 	}
 
 	nextId(): string {
@@ -92,6 +154,21 @@ export class GameRoom {
 
 	async fetch(request: Request): Promise<Response> {
 		if (request.headers.get('upgrade') !== 'websocket') {
+			// The lobby's create route seeds a brand-new room with its chosen seats via a plain POST,
+			// before anyone ever opens a websocket to it.
+			if (request.method === 'POST') {
+				let body: any;
+				try {
+					body = await request.json();
+				} catch {
+					return new Response('invalid json', { status: 400 });
+				}
+				if (body?.type === 'init') {
+					await this.initSeats(body.seats ?? DEFAULT_SEATS);
+					return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
+				}
+				return new Response('unknown POST action', { status: 400 });
+			}
 			return new Response('expected a websocket upgrade request', { status: 426 });
 		}
 		const game = await this.loadGame();
@@ -122,6 +199,14 @@ export class GameRoom {
 
 		console.log(`[room] action: ${msg.type} ${JSON.stringify(msg)}`);
 
+		// Deliberately not routed through applyAction: ending a table is destructive (wipes storage,
+		// removes it from the lobby list) and needs real awaited async work, unlike every other
+		// action, which only ever mutates the in-memory game object.
+		if (msg.type === 'endTable') {
+			await this.endTable();
+			return;
+		}
+
 		this.lastBatchErrors = [];
 		try {
 			this.applyAction(msg);
@@ -138,6 +223,28 @@ export class GameRoom {
 
 		await this.saveGame();
 		this.broadcast();
+	}
+
+	// Explicit and deliberate, not tied to anyone navigating away or closing a tab — a real PvP
+	// game shouldn't die just because one player hit "back" for a second. Wipes persisted storage
+	// and removes the room from the lobby list so it can't be rejoined or resurrected, then tells
+	// every connected client (both players, any spectator) to leave.
+	async endTable() {
+		const roomId = this.ctx.id.name;
+		if (roomId && this.env?.LOBBY) {
+			const stub = this.env.LOBBY.get(this.env.LOBBY.idFromName('singleton'));
+			await stub.fetch('http://lobby/remove', { method: 'POST', body: JSON.stringify({ roomId }) }).catch(() => {});
+		}
+		await this.ctx.storage.deleteAll();
+		this.game = null;
+		const payload = JSON.stringify({ type: 'ended' });
+		for (const ws of this.ctx.getWebSockets()) {
+			try {
+				ws.send(payload);
+			} catch {
+				// socket already gone; nothing to do
+			}
+		}
 	}
 
 	async webSocketClose(ws: WebSocket, code: number, reason: string) {
@@ -198,6 +305,10 @@ export class GameRoom {
 				return this.adjustLife(msg.player, msg.delta);
 			case 'passTurn':
 				return this.passTurn();
+			case 'claimSeat':
+				return this.claimSeat(msg.seatId, msg.clientId, msg.label);
+			case 'releaseSeat':
+				return this.releaseSeat(msg.seatId, msg.clientId);
 			case 'loadDeck':
 				return this.loadDeck(
 					msg.player, msg.commanderNames ?? [], msg.deckEntries ?? [],
@@ -215,7 +326,7 @@ export class GameRoom {
 				return this.adjustCounter(msg.player, zone, cardId, msg.counterType, msg.delta);
 			}
 			case 'resetTable':
-				this.game = freshState(this.game?.cardInfo ?? {});
+				this.game = freshState(this.game?.seats ?? DEFAULT_SEATS, this.game?.cardInfo ?? {});
 				return;
 			default:
 				throw new Error('unknown action: ' + msg.type);
@@ -305,14 +416,62 @@ export class GameRoom {
 
 	passTurn() {
 		const game = this.game!;
-		const next: PlayerKey = game.active === 'you' ? 'ai' : 'you';
-		if (next === 'you') game.turn += 1;
+		// seats[] is turn order — cycling its index generalizes the old you/ai binary toggle to any
+		// number of seats. Wrapping back to the first seat is what starting a new turn means.
+		const idx = game.seats.findIndex((s) => s.id === game.active);
+		const nextIdx = (idx + 1) % game.seats.length;
+		const nextSeat = game.seats[nextIdx];
+		const next: PlayerKey = nextSeat.id;
+		if (nextIdx === 0) game.turn += 1;
 		game.active = next;
 		// Real Magic has an automatic untap step — without this, a tapped permanent stays tapped
 		// forever until someone remembers to toggle it back, and re-tapping it for "this turn's
 		// mana" on an already-tapped land silently untaps it instead (a toggle, not a set).
 		for (const card of this.player(next).battlefield) card.tapped = false;
-		this.addLog('system', `Turn passed — ${next === 'you' ? 'your' : "AI's"} turn (turn ${game.turn})`);
+		this.addLog('system', `Turn passed — ${nextSeat.label}'s turn (turn ${game.turn})`);
+
+		// Real Magic also has an automatic draw step, with the standard exception that whoever
+		// goes first skips it on their very first turn. That exception falls out for free here:
+		// the starting player's first turn is set directly by freshState(), never by passTurn(),
+		// so this only ever fires on a turn that's actually being *passed into* — exactly the
+		// turns where a draw is supposed to happen. Also removes a whole round trip Claude used to
+		// need (call `draw`, look at the result, then decide) before it could act on the AI's turn.
+		const p = this.player(next);
+		if (p.library.length) {
+			const card = p.library.shift()!;
+			p.hand.push(card);
+			this.addLog(next, `${p.label} drew ${card.name} for the turn.`);
+		}
+	}
+
+	// Claiming is a client-side-only convenience (which browser tab thinks it's "playing" which
+	// seat), not server-enforced access control — any client can still send moves for any seat
+	// regardless of claim state. It only exists so the UI knows which controls to default to.
+	// An optional label lets whoever's claiming (re)name the seat to their own name at the same
+	// time — otherwise a joining player would be stuck under whatever generic label the room was
+	// created with.
+	claimSeat(seatId: string, clientId: string, label?: string) {
+		const seat = this.game!.seats.find((s) => s.id === seatId);
+		if (!seat) throw new Error('unknown seat: ' + seatId);
+		if (seat.controller === 'ai') throw new Error('seat is AI-controlled, cannot be claimed');
+		if (seat.claimedBy && seat.claimedBy !== clientId) throw new Error('seat already claimed');
+		seat.claimedBy = clientId;
+		if (label) {
+			seat.label = label;
+			// PlayerState.label is a separate copy taken at seat-creation time (see freshState) — keep
+			// it in sync so the board's life/hand/log display picks up the real name too, not just the
+			// seat list.
+			this.player(seatId).label = label;
+		}
+		this.notifyLobby(seatId, clientId, label);
+	}
+
+	releaseSeat(seatId: string, clientId: string) {
+		const seat = this.game!.seats.find((s) => s.id === seatId);
+		if (seat && seat.claimedBy === clientId) {
+			seat.claimedBy = null;
+			this.notifyLobby(seatId, null);
+		}
 	}
 
 	loadDeck(

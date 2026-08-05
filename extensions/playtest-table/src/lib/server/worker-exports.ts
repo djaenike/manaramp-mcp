@@ -3,3 +3,4 @@
 // the final Cloudflare Worker bundle, which is how wrangler.jsonc's durable_objects binding is
 // able to find the GameRoom class by name at runtime.
 export { GameRoom } from './game-room';
+export { LobbyRegistry } from './lobby-registry';

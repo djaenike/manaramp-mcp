@@ -13,23 +13,28 @@
 //
 // Usage:
 //   node scripts/play.js state
-//   node scripts/play.js move <you|ai> "<card name>" <fromZone> <toZone>
-//   node scripts/play.js tap <you|ai> "<card name>"
-//   node scripts/play.js draw <you|ai>
-//   node scripts/play.js shuffle <you|ai>
-//   node scripts/play.js openingHand <you|ai>
-//   node scripts/play.js mulligan <you|ai>
-//   node scripts/play.js life <you|ai> <+N|-N>
+//   node scripts/play.js move <seatId> "<card name>" <fromZone> <toZone>
+//   node scripts/play.js tap <seatId> "<card name>"
+//   node scripts/play.js draw <seatId>
+//   node scripts/play.js shuffle <seatId>
+//   node scripts/play.js openingHand <seatId>
+//   node scripts/play.js mulligan <seatId>
+//   node scripts/play.js life <seatId> <+N|-N>
 //   node scripts/play.js pass
-//   node scripts/play.js importDeck <you|ai> <path to decklist .txt file>   (Moxfield-style export)
-//   node scripts/play.js randomDeck <you|ai> ["<commander name>"]          (blank = random pick)
-//   node scripts/play.js addCard <you|ai> <zone> "<card name>"        (also how you create tokens — any name works)
-//   node scripts/play.js remove <you|ai> <zone> "<card name>"         (deletes outright — for tokens leaving play)
-//   node scripts/play.js counter <you|ai> "<card name>" <counterType> <+N|-N>   (zone defaults to battlefield)
-//   node scripts/play.js search <you|ai> <library|hand> <query>       (matches by name OR type line, e.g. "land", "goblin")
+//   node scripts/play.js importDeck <seatId> <path to decklist .txt file>   (Moxfield-style export)
+//   node scripts/play.js randomDeck <seatId> ["<commander name>"]          (blank = random pick)
+//   node scripts/play.js addCard <seatId> <zone> "<card name>"        (also how you create tokens — any name works)
+//   node scripts/play.js remove <seatId> <zone> "<card name>"         (deletes outright — for tokens leaving play)
+//   node scripts/play.js counter <seatId> "<card name>" <counterType> <+N|-N>   (zone defaults to battlefield)
+//   node scripts/play.js search <seatId> <library|hand> <query>       (matches by name OR type line, e.g. "land", "goblin")
 //   node scripts/play.js reset
 //   node scripts/play.js raw '{"type":"...", ...}'
 //   node scripts/play.js batch '[{"type":"moveCard","player":"ai","cardName":"Island","fromZone":"hand","toZone":"battlefield"},{"type":"toggleTap","player":"ai","cardName":"Island"},{"type":"passTurn"}]'
+//
+// <seatId> is whatever this room's actual seats are — the old two-seat "default" room (never
+// seeded via the lobby) still uses the literal ids "you"/"ai", but a lobby-created room has
+// "seat0"/"seat1" (or whatever labels were chosen). Run `state` first if you don't already know a
+// room's seat ids — the printed state lists both seats' labels and ids.
 //
 // A whole turn is normally one `batch` call — one connection, one round trip — instead of one
 // process + connection per action.
@@ -62,6 +67,10 @@ function sendAndAwait(ws, action) {
 			if (msg.type === 'state') {
 				ws.removeEventListener('message', handler);
 				resolve(msg.state);
+			} else if (msg.type === 'ended') {
+				// endTable's response, not a state broadcast — there's no further state to wait for.
+				ws.removeEventListener('message', handler);
+				resolve(null);
 			} else if (msg.type === 'error') {
 				ws.removeEventListener('message', handler);
 				reject(new Error(msg.error));
@@ -132,14 +141,23 @@ function describeCard(c) {
 	return bits.join(' ');
 }
 
+// Mana cost inline in every hand listing — this is the whole point of cardInfo living in state:
+// one `draw`/`state`/`pass` response already has everything needed to decide a play, no separate
+// cost-check round trip required.
+function describeHandCard(c, cardInfo) {
+	const info = cardInfo?.[c.name.toLowerCase()];
+	return info?.manaCost ? `${c.name} ${info.manaCost}` : c.name;
+}
+
 function summarize(state) {
+	const cardInfo = state.cardInfo || {};
 	const lines = [];
 	lines.push(`turn ${state.turn}, active: ${state.active}, revision ${state.revision}`);
-	for (const key of ['you', 'ai']) {
+	for (const key of Object.keys(state.players)) {
 		const p = state.players[key];
 		lines.push(
 			`${key} (${p.label}) — life ${p.life} | command: [${p.command.map((c) => c.name).join(', ')}] | ` +
-			`hand (${p.hand.length}): [${p.hand.map((c) => c.name).join(', ')}] | ` +
+			`hand (${p.hand.length}): [${p.hand.map((c) => describeHandCard(c, cardInfo)).join(', ')}] | ` +
 			`battlefield (${p.battlefield.length}): [${p.battlefield.map(describeCard).join(', ')}] | ` +
 			`library: ${p.library.length} | graveyard: ${p.graveyard.length} | exile: ${p.exile.length}`
 		);
@@ -247,7 +265,7 @@ async function main() {
 		ws.close();
 	}
 
-	console.log(summarize(result));
+	console.log(result === null ? 'Table ended.' : summarize(result));
 	exitCleanly(0);
 }
 

@@ -36,7 +36,6 @@ export const RANDOM_COMMANDERS = [
 	'Yarok, the Desecrated',
 	'Kenrith, the Returned King',
 	'Niv-Mizzet, Parun',
-	'Golos, Tireless Pilgrim',
 	'Feather, the Redeemed'
 ];
 
