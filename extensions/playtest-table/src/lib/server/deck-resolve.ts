@@ -44,6 +44,24 @@ export interface ResolveResult {
 	notFound: string[];
 }
 
+// A refused-connection-style problem for this file: Scryfall rate-limits by client IP, and
+// Cloudflare Workers egress through a shared IP pool (not a dedicated per-project IP) — meaning
+// this Worker can get 429'd by Scryfall's rate limiter even at modest request volume, in a way
+// that never showed up testing locally (where outbound requests went through the dev machine's
+// own IP instead). Retries a 429 a few times with backoff (respecting Retry-After if Scryfall
+// sends one) before giving up, rather than failing the whole deck load on the first rate limit hit.
+async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3): Promise<Response> {
+	for (let attempt = 0; ; attempt++) {
+		const res = await fetch(url, options);
+		if (res.status !== 429 || attempt >= maxRetries) return res;
+		const retryAfterHeader = res.headers.get('Retry-After');
+		const waitMs = retryAfterHeader
+			? Math.min((Number(retryAfterHeader) || 1) * 1000, 5000)
+			: 400 * Math.pow(2, attempt);
+		await new Promise((r) => setTimeout(r, waitMs));
+	}
+}
+
 function cardImage(card: any): string | null {
 	if (card.image_uris?.normal) return card.image_uris.normal;
 	if (card.card_faces?.[0]?.image_uris?.normal) return card.card_faces[0].image_uris.normal;
@@ -61,7 +79,7 @@ export async function resolveCardInfo(names: string[]): Promise<ResolveResult> {
 
 	for (let i = 0; i < unique.length; i += 75) {
 		const chunk = unique.slice(i, i + 75);
-		const res = await fetch(`${SCRYFALL_BASE}/cards/collection`, {
+		const res = await fetchWithRetry(`${SCRYFALL_BASE}/cards/collection`, {
 			method: 'POST',
 			headers: { ...HEADERS, 'Content-Type': 'application/json' },
 			body: JSON.stringify({ identifiers: chunk.map((name) => ({ name })) })
@@ -98,7 +116,7 @@ export interface EdhrecDeck {
 // Worker instead of the local MCP server.
 export async function fetchEdhrecAverageDeck(commanderName: string): Promise<EdhrecDeck> {
 	const slug = slugify(commanderName);
-	const res = await fetch(`${EDHREC_BASE}/average-decks/${slug}.json`, { headers: HEADERS });
+	const res = await fetchWithRetry(`${EDHREC_BASE}/average-decks/${slug}.json`, { headers: HEADERS });
 	if (res.status === 404) {
 		throw new Error(`No EDHREC page found for commander "${commanderName}". Check spelling.`);
 	}
