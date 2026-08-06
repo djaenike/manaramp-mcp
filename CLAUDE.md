@@ -6,11 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A local MCP (Model Context Protocol) server, entirely in `index.js` (~1200 lines, ESM, no build step, no
 tests, no lint config). It runs over stdio and is spawned as a subprocess by Claude Desktop / Claude Code.
-It exposes 18 tools: 10 let Claude reason over live Magic: The Gathering data instead of guessing from
-training data, 5 (`playtest_*`) drive a companion local playtest server, 1 (`rate_deck_bracket`) is a
-deterministic classifier against the Commander Format Panel's official Bracket System, and 2 more
-(`get_moxfield_decklist`, `get_deck_price_total`) round out deck import and a whole-decklist price check —
-see below and `extensions/README.md`.
+It exposes 19 tools: 10 let Claude reason over live Magic: The Gathering data instead of guessing from
+training data, 5 (`playtest_*`) drive a companion local playtest server, 2 (`rate_deck_bracket`,
+`analyze_deck_consistency`) are deterministic checks — power-level bracket and structural legality/mana
+curve, respectively — against real data instead of an eyeballed guess, and 2 more (`get_moxfield_decklist`,
+`get_deck_price_total`) round out deck import and a whole-decklist price check — see below and
+`extensions/README.md`.
 
 ## Commands
 
@@ -42,8 +43,9 @@ calling Claude model reads to decide when and how to use each tool and how to in
 data source's reliability. When editing a tool, keep the description accurate to its actual behavior and
 data-quality caveats, since that's the only place this information reaches the model.
 
-Five independent upstream data sources are combined, each with different trust levels — this drives most
-of the caveats in tool descriptions and error messages:
+Several independent upstream data sources (plus a couple of purely local, deterministic checks) are
+combined below, each with different trust levels — this drives most of the caveats in tool
+descriptions and error messages:
 
 - **Scryfall** (`search_cards`, `get_card_by_name`, `get_rulings`) — official, documented, no API key.
   Source of card text/legality/bulk price estimate.
@@ -77,6 +79,19 @@ of the caveats in tool descriptions and error messages:
   session that Commander Spellbook's `or` keyword is accepted syntax but does NOT behave as boolean OR
   (two individually-valid single-card queries can combine via `or` into zero results), so don't
   reintroduce a batched-OR "optimization" here without re-verifying it against the live API first.
+- **`analyze_deck_consistency`** — not a separate upstream source: reuses the same Scryfall
+  `/cards/collection` batch call `classifyComboSpeed`/`resolveCardInfo` already use (one fetch
+  yields `cmc`, `type_line`, `color_identity`, and `legalities.commander` for the whole decklist at
+  once). Checks deck size (100, commander(s) included), singleton (basic-land-ness read from the
+  real `type_line`, not a hardcoded name list), color identity, and Commander legality — then
+  computes a mana curve and a `curve_out_probability` (turns 1-6) via a hand-rolled hypergeometric
+  helper (`combinations`/`hypergeometricAtLeast`, an iterative running product/division so a
+  99-card library never risks overflow). That probability is an explicitly SIMPLIFIED model (7-card
+  opening hand + 1 draw/turn, no mulligans/scry/ramp/card-draw spells) — verified by hand this
+  session (37/99 lands → 96.7% chance of ≥1 land in the opening 7, matching the classic
+  Frank-Karsten-style reference figure). Deliberately does **not** detect combos — that stays
+  `rate_deck_bracket`'s job, so the Commander-Spellbook-querying logic never has to live in two
+  places at once.
 - **Moxfield** (`get_moxfield_decklist`) — no official public API; hits the same undocumented
   `api2.moxfield.com/v2/decks/all/<deckId>` endpoint Moxfield's own frontend calls, which needs its own
   browser-like `MOXFIELD_HEADERS` (the shared Scryfall `HEADERS` User-Agent gets rejected here). **Known,
@@ -113,18 +128,33 @@ enough to validate directly rather than leaving it as a free-form string.
 
 Whenever a conversation in this repo lands on a finished decklist — built via `build_budget_deck`,
 assembled manually, or fetched via `get_moxfield_decklist` — treat the job as unfinished until all of
-these are delivered, not just a card list:
+these are delivered, in this order, every time, not just a card list. Items 2-4 all depend on
+calling `rate_deck_bracket`, `get_deck_price_total`, and `analyze_deck_consistency`
+**unconditionally** — not just "if a budget was mentioned" — and re-calling all three after *every*
+manual swap, not once at the start:
 
-1. **A short summary** — the commander, the deck's strategy/theme, and a sentence or two on how it
-   actually wins.
-2. **Its bracket rating**, via `rate_deck_bracket` — stated plainly to the user, not computed silently
-   and left out of the final message.
-3. **Win conditions**, if any — combos `rate_deck_bracket`/`find_combos` surfaced, or the deck's primary
-   game plan if there's no hard combo piece.
-4. **A real playtest import** — `playtest_create_table` (label it with the actual commander/deck name,
+1. **The decklist itself, as one ready-to-paste block** — `Commander` / blank line / `Deck` text
+   (the same format `get_moxfield_decklist`'s `decklist_text` produces and `playtest_load_deck`'s
+   `decklist_text` param parses), shown to the user verbatim so it can be pasted straight into either
+   `playtest_load_deck` or Moxfield's own importer with no reformatting.
+2. **A compact summary table**: bracket rating (`rate_deck_bracket`'s `bracket_estimate`) | total
+   price (`get_deck_price_total`'s `total_usd`, Card Kingdom-standardized) | legality/count status
+   (`analyze_deck_consistency`'s `issues` — "clean" or the actual list).
+3. **Mana curve** — `analyze_deck_consistency`'s `mana_curve` histogram plus its
+   `curve_out_probability`, shown plainly (a small table is fine), carrying forward that tool's own
+   stated simplifying assumptions rather than dropping them.
+4. **Win conditions** — `rate_deck_bracket`'s full `combos_found` detail (piece names, `total_cmc`,
+   `speed`), translated into a plain-English turn estimate ("fast" → roughly turn 6 or earlier,
+   "slow" → turn 7+), or the deck's primary game plan if no combo was found.
+5. **A real playtest import** — `playtest_create_table` (label it with the actual commander/deck name,
    never leave it as "Untitled table") followed by `playtest_load_deck` for that seat, so the user gets
-   a real `room_url` to open, not just a decklist to eyeball.
-5. **If a budget was ever mentioned**, confirm the actual final total via `get_deck_price_total` before
-   calling it done — this is a real, previously-hit failure mode: a decklist that started at $75 drifted
-   to $135 after manual swaps because nothing re-verified the total after the last edit. Re-check after
-   *every* swap, not just once at the start.
+   a real `room_url` to open, not just a decklist to eyeball. Alongside that specific `room_url`, always
+   also surface the live lobby link — `https://scryfall-mcp.playtest-table.workers.dev/lobby` (same host
+   as `PLAYTEST_BASE` in `index.js`) — and explicitly invite the user to playtest the new deck there,
+   either against the AI or by sharing the room with another human player. The direct `room_url` opens
+   this specific table; the lobby link is what lets the user (or whoever they share it with) find and
+   rejoin it later, or start a fresh table against a different opponent.
+6. **Re-run steps 2-3 after every manual swap**, not just once at the start — this generalizes a
+   real, previously-hit failure mode (a decklist that started at $75 drifted to $135 after manual
+   swaps because nothing re-verified the total after the last edit) to legality/count/curve too,
+   since a swap can just as easily break singleton or color identity as it can blow a budget.

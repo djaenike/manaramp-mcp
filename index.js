@@ -368,6 +368,34 @@ async function classifyComboSpeed(combos) {
   });
 }
 
+// --- Hypergeometric helpers for analyze_deck_consistency's curve-out probability ------------
+// nCr via an iterative running product/division rather than raw factorials — a 99-card library's
+// factorial would still fit in a double, but the ratio-of-huge-numbers approach loses precision
+// needlessly when this running-product form stays numerically small throughout.
+function combinations(n, k) {
+  if (k < 0 || k > n) return 0;
+  k = Math.min(k, n - k);
+  let result = 1;
+  for (let i = 0; i < k; i++) {
+    result = (result * (n - i)) / (i + 1);
+  }
+  return result;
+}
+
+// P(at least `need` successes drawn in `draws` cards from a `librarySize`-card population
+// containing `successes` total). Standard hypergeometric survival function.
+function hypergeometricAtLeast(librarySize, successes, draws, need) {
+  const upper = Math.min(draws, successes);
+  if (need > upper) return 0;
+  const total = combinations(librarySize, draws);
+  if (total === 0) return 0;
+  let sum = 0;
+  for (let i = need; i <= upper; i++) {
+    sum += (combinations(successes, i) * combinations(librarySize - successes, draws - i)) / total;
+  }
+  return sum;
+}
+
 // Create the MCP server instance
 const server = new McpServer({
   name: "scryfall-mcp",
@@ -1281,6 +1309,168 @@ server.tool(
         }, null, 2),
       }],
     };
+  }
+);
+
+// --- Tool 19: analyze_deck_consistency ---
+server.tool(
+  "analyze_deck_consistency",
+  "Validate a Commander decklist's structural legality — exactly 100 cards total (commander(s) " +
+  "included), singleton except basic lands, every card within the commander's color identity, " +
+  "every card actually legal in Commander — and compute its mana curve plus a turn-by-turn " +
+  "'curve-out' probability. A deterministic check against real Scryfall data, not an eyeballed " +
+  "guess. Reuses the same Scryfall /cards/collection batch call this server already uses " +
+  "elsewhere (classifyComboSpeed/resolveCardInfo), so validation and curve data come from one " +
+  "fetch. Deliberately does NOT detect combos — that's rate_deck_bracket's job; call both " +
+  "together for a complete final-delivery check (see CLAUDE.md's 'Deck-building final " +
+  "deliverable' section). curve_out_probability is a SIMPLIFIED hypergeometric model (7-card " +
+  "opening hand + 1 draw/turn) that does not account for mulligans, scry/surveil, card draw " +
+  "spells, or ramp — treat it as a rough consistency signal, not a precise simulation.",
+  {
+    commander_names: z.array(z.string()).min(1).describe("Exact commander name(s), e.g. ['Atraxa, Grand Unifier']"),
+    deck_entries: z.array(z.object({
+      name: z.string(),
+      qty: z.number().int().min(1),
+    })).min(1).describe(
+      "Every non-commander card with its quantity, e.g. {name:'Forest', qty:8}. Use qty:1 for " +
+      "singleton nonbasics. Matches get_moxfield_decklist's deck_entries shape exactly — pipe " +
+      "its output straight through with no reshaping."
+    ),
+  },
+  async ({ commander_names, deck_entries }) => {
+    try {
+      const uniqueDeckNames = Array.from(new Set(deck_entries.map((e) => e.name)));
+      const allIdentifierNames = Array.from(new Set([...commander_names, ...uniqueDeckNames]));
+
+      const cardByName = new Map();
+      const notFound = [];
+      for (let i = 0; i < allIdentifierNames.length; i += 75) {
+        const chunk = allIdentifierNames.slice(i, i + 75);
+        const res = await fetch(`${SCRYFALL_BASE}/cards/collection`, {
+          method: "POST",
+          headers: { ...HEADERS, "Content-Type": "application/json" },
+          body: JSON.stringify({ identifiers: chunk.map((name) => ({ name })) }),
+        });
+        if (!res.ok) {
+          return { content: [{ type: "text", text: `Scryfall collection request failed: ${res.status} ${res.statusText}` }] };
+        }
+        const data = await res.json();
+        for (const card of data.data ?? []) {
+          cardByName.set(card.name.toLowerCase(), card);
+        }
+        for (const nf of data.not_found ?? []) {
+          if (nf?.name) notFound.push(nf.name);
+        }
+        if (i + 75 < allIdentifierNames.length) await new Promise((r) => setTimeout(r, 80));
+      }
+
+      const isLand = (card) => (card?.type_line ?? "").includes("Land");
+      const isBasicLand = (card) => (card?.type_line ?? "").includes("Basic Land");
+
+      // Union across all commanders, not just the first — partner/background pairs combine identities.
+      const commanderColorSet = new Set();
+      for (const name of commander_names) {
+        const card = cardByName.get(name.toLowerCase());
+        for (const c of card?.color_identity ?? []) commanderColorSet.add(c);
+      }
+
+      const totalCards = commander_names.length + deck_entries.reduce((sum, e) => sum + e.qty, 0);
+      const sizeWarning = totalCards !== 100
+        ? `Deck has ${totalCards} total cards (commander(s) + library) — a standard Commander deck is exactly 100.`
+        : null;
+
+      const duplicateViolations = [];
+      const colorIdentityViolations = [];
+      const notCommanderLegal = [];
+      let landCount = 0;
+      let nonlandCount = 0;
+      let nonlandCmcTotal = 0;
+      const manaCurve = { "0": 0, "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7+": 0 };
+
+      for (const entry of deck_entries) {
+        const card = cardByName.get(entry.name.toLowerCase());
+        if (!card) continue; // already reported via notFound
+
+        if (entry.qty > 1 && !isBasicLand(card)) {
+          duplicateViolations.push({ name: entry.name, qty: entry.qty });
+        }
+
+        const cardColors = card.color_identity ?? [];
+        const offendingColors = cardColors.filter((c) => !commanderColorSet.has(c));
+        if (offendingColors.length) {
+          colorIdentityViolations.push({ name: entry.name, card_color_identity: cardColors, offending_colors: offendingColors });
+        }
+
+        if (card.legalities?.commander !== "legal") {
+          notCommanderLegal.push({ name: entry.name, status: card.legalities?.commander ?? "unknown" });
+        }
+
+        if (isLand(card)) {
+          landCount += entry.qty;
+        } else {
+          nonlandCount += entry.qty;
+          nonlandCmcTotal += (card.cmc ?? 0) * entry.qty;
+          const bucket = card.cmc >= 7 ? "7+" : String(Math.max(0, Math.round(card.cmc ?? 0)));
+          manaCurve[bucket] = (manaCurve[bucket] ?? 0) + entry.qty;
+        }
+      }
+
+      // Commander(s) themselves are also subject to the Commander-legal check (rare, but banned
+      // commander-specific cards do exist) — they aren't in deck_entries so checked separately.
+      for (const name of commander_names) {
+        const card = cardByName.get(name.toLowerCase());
+        if (card && card.legalities?.commander !== "legal") {
+          notCommanderLegal.push({ name, status: card.legalities?.commander ?? "unknown" });
+        }
+      }
+
+      const librarySize = totalCards - commander_names.length;
+      const curveOutProbability = {};
+      for (let turn = 1; turn <= 6; turn++) {
+        const draws = Math.min(7 + turn, librarySize);
+        curveOutProbability[`turn_${turn}`] = Math.round(hypergeometricAtLeast(librarySize, landCount, draws, turn) * 1000) / 1000;
+      }
+
+      const issues = [];
+      if (sizeWarning) issues.push(sizeWarning);
+      if (duplicateViolations.length) {
+        issues.push(`Singleton violations: ${duplicateViolations.map((d) => `${d.name} x${d.qty}`).join(", ")}`);
+      }
+      if (colorIdentityViolations.length) {
+        issues.push(`Outside commander's color identity: ${colorIdentityViolations.map((v) => v.name).join(", ")}`);
+      }
+      if (notCommanderLegal.length) {
+        issues.push(`Not legal in Commander: ${notCommanderLegal.map((v) => `${v.name} (${v.status})`).join(", ")}`);
+      }
+      if (notFound.length) {
+        issues.push(`Not found on Scryfall (check spelling): ${notFound.join(", ")}`);
+      }
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            issues: issues.length ? issues : "No issues found — legal, correctly sized, and singleton-clean.",
+            total_cards: totalCards,
+            land_count: landCount,
+            nonland_count: nonlandCount,
+            avg_nonland_cmc: nonlandCount ? Math.round((nonlandCmcTotal / nonlandCount) * 100) / 100 : 0,
+            mana_curve: manaCurve,
+            curve_out_probability: {
+              note: "Simplified model: 7-card opening hand + 1 draw/turn, no mulligans/scry/ramp/card-draw " +
+                "spells modeled. turn_N is the probability of having drawn at least N lands by turn N.",
+              ...curveOutProbability,
+            },
+            duplicate_violations: duplicateViolations,
+            color_identity_violations: colorIdentityViolations,
+            not_commander_legal: notCommanderLegal,
+            not_found: notFound,
+          }, null, 2),
+        }],
+      };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Deck consistency check failed: ${e.message}` }] };
+    }
   }
 );
 
