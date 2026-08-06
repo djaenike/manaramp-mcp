@@ -53,6 +53,13 @@ export interface GameState {
 	// Grows every time any deck is imported into this room — never shrinks, never overwritten with
 	// worse data, so the second time a card shows up (even in a totally different deck) it's free.
 	cardInfo: Record<string, CardInfoEntry>;
+	// Persisted (not a bare class field) because a Durable Object can be evicted from memory
+	// between alarm firings — these have to survive that via the same saveGame() round trip as
+	// the rest of state. aiMoveCount is a hard ceiling on total automatic AI actions for this room
+	// (a runaway-loop backstop); aiConsecutiveFailures halts auto-play after repeated Anthropic API
+	// failures (e.g. a bad key) instead of retrying forever.
+	aiMoveCount?: number;
+	aiConsecutiveFailures?: number;
 }
 
 export interface DeckEntry {

@@ -1,7 +1,12 @@
 import type { Card, DeckEntry, GameState, PlayerKey, PlayerState, SeatDef, ZoneName } from './types';
 import { RANDOM_COMMANDERS, fetchEdhrecAverageDeck, resolveCardInfo } from './deck-resolve';
+import { requestAiTurn } from './ai-turn';
 
 const ALL_ZONES: ZoneName[] = ['command', 'library', 'hand', 'battlefield', 'graveyard', 'exile'];
+
+// A backstop against a genuine runaway loop (e.g. a stuck deck that only ever draws-and-passes),
+// not a realistic ceiling — most games never get within an order of magnitude of this.
+const MAX_AI_MOVES_PER_ROOM = 300;
 
 // Fallback shape for a room that's never been seeded via the lobby's /init call (e.g. hit
 // directly by an old habit or a script against a fresh room id) — reproduces the original
@@ -36,7 +41,9 @@ function freshState(seats: SeatDef[] = DEFAULT_SEATS, cardInfo: GameState['cardI
 		log: [{ who: 'system', text: 'Table opened. Load a deck for each side, draw an opening hand, and play.' }],
 		seats,
 		players: Object.fromEntries(seats.map((s) => [s.id, emptyPlayer(s.label)])),
-		cardInfo
+		cardInfo,
+		aiMoveCount: 0,
+		aiConsecutiveFailures: 0
 	};
 }
 
@@ -109,6 +116,61 @@ export class GameRoom {
 			if (seat.controller === 'ai') await this.autoLoadRandomDeck(seat.id);
 		}
 		await this.saveGame();
+		// Covers the AI-vs-AI case: freshState() sets active to seats[0], which may already be
+		// AI-controlled before anyone ever calls passTurn().
+		this.maybeScheduleAiTurn();
+	}
+
+	// Reactive per-room scheduling (a Durable Object Alarm), not a global cron sweep — fires once,
+	// ~1.5s after whatever just made this seat active, giving the just-saved state a moment to
+	// broadcast first and keeping AI-vs-AI spectator play watchable instead of instant.
+	private maybeScheduleAiTurn() {
+		const seat = this.game?.seats.find((s) => s.id === this.game?.active);
+		if (seat?.controller === 'ai') this.ctx.storage.setAlarm(Date.now() + 1500);
+	}
+
+	// Cloudflare calls this automatically when a scheduled alarm fires. This is what makes an AI
+	// seat's turn happen with zero dependency on any Claude Code/Desktop session being open — the
+	// Worker calls Anthropic's API directly, using its own ANTHROPIC_API_KEY secret.
+	async alarm() {
+		await this.loadGame();
+		const game = this.game!;
+		const seat = game.seats.find((s) => s.id === game.active);
+		if (!seat || seat.controller !== 'ai') return; // stale/superseded alarm — nothing to do
+
+		if ((game.aiMoveCount ?? 0) >= MAX_AI_MOVES_PER_ROOM) {
+			this.addLog('system', 'Automatic AI play limit reached for this room — no further automatic moves.');
+			await this.saveGame();
+			return;
+		}
+
+		try {
+			const actions = await requestAiTurn(game, seat.id, this.env);
+			game.aiMoveCount = (game.aiMoveCount ?? 0) + 1;
+			game.aiConsecutiveFailures = 0;
+			this.applyAction({ type: 'batch', actions });
+			// Safety net: if the model's batch didn't end with passTurn, force it so the room can
+			// never stall waiting on a move that already happened.
+			if (game.active === seat.id) this.passTurn();
+		} catch (e) {
+			game.aiConsecutiveFailures = (game.aiConsecutiveFailures ?? 0) + 1;
+			const errMsg = e instanceof Error ? e.message : String(e);
+			this.addLog('system', `AI move failed (${game.aiConsecutiveFailures}/3): ${errMsg}`);
+			if (game.aiConsecutiveFailures >= 3) {
+				this.addLog(
+					'system',
+					'Stopping automatic play for this seat after repeated failures — check the ' +
+						'ANTHROPIC_API_KEY secret, then pass the turn manually to resume.'
+				);
+				await this.saveGame();
+				this.broadcast();
+				return; // do not reschedule — avoids hot-looping a persistently broken call (e.g. a bad key)
+			}
+		}
+
+		await this.saveGame();
+		this.broadcast();
+		this.maybeScheduleAiTurn();
 	}
 
 	// Best-effort: a failed Scryfall/EDHREC lookup just logs and leaves that seat empty rather than
@@ -236,6 +298,7 @@ export class GameRoom {
 			await stub.fetch('http://lobby/remove', { method: 'POST', body: JSON.stringify({ roomId }) }).catch(() => {});
 		}
 		await this.ctx.storage.deleteAll();
+		await this.ctx.storage.deleteAlarm();
 		this.game = null;
 		const payload = JSON.stringify({ type: 'ended' });
 		for (const ws of this.ctx.getWebSockets()) {
@@ -442,6 +505,8 @@ export class GameRoom {
 			p.hand.push(card);
 			this.addLog(next, `${p.label} drew ${card.name} for the turn.`);
 		}
+
+		this.maybeScheduleAiTurn();
 	}
 
 	// Claiming is a client-side-only convenience (which browser tab thinks it's "playing" which

@@ -23,6 +23,10 @@ Thumbs.db
 !.env.example
 !.env.test
 
+# wrangler's local secret-injection file (e.g. ANTHROPIC_API_KEY for testing ai-turn.ts locally) —
+# not matched by the .env* patterns above since wrangler looks for this exact filename.
+.dev.vars
+
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
