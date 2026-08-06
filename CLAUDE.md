@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A local MCP (Model Context Protocol) server, entirely in `index.js` (~1050 lines, ESM, no build step, no
+A local MCP (Model Context Protocol) server, entirely in `index.js` (~1200 lines, ESM, no build step, no
 tests, no lint config). It runs over stdio and is spawned as a subprocess by Claude Desktop / Claude Code.
-It exposes 16 tools: 10 let Claude reason over live Magic: The Gathering data instead of guessing from
-training data, 5 (`playtest_*`) drive a companion local playtest server, and 1 (`rate_deck_bracket`) is a
-deterministic classifier against the Commander Format Panel's official Bracket System — see below and
-`extensions/README.md`.
+It exposes 18 tools: 10 let Claude reason over live Magic: The Gathering data instead of guessing from
+training data, 5 (`playtest_*`) drive a companion local playtest server, 1 (`rate_deck_bracket`) is a
+deterministic classifier against the Commander Format Panel's official Bracket System, and 2 more
+(`get_moxfield_decklist`, `get_deck_price_total`) round out deck import and a whole-decklist price check —
+see below and `extensions/README.md`.
 
 ## Commands
 
@@ -76,6 +77,15 @@ of the caveats in tool descriptions and error messages:
   session that Commander Spellbook's `or` keyword is accepted syntax but does NOT behave as boolean OR
   (two individually-valid single-card queries can combine via `or` into zero results), so don't
   reintroduce a batched-OR "optimization" here without re-verifying it against the live API first.
+- **Moxfield** (`get_moxfield_decklist`) — no official public API; hits the same undocumented
+  `api2.moxfield.com/v2/decks/all/<deckId>` endpoint Moxfield's own frontend calls, which needs its own
+  browser-like `MOXFIELD_HEADERS` (the shared Scryfall `HEADERS` User-Agent gets rejected here). **Known,
+  confirmed issue**: Moxfield's anti-bot protection sometimes 403s Node's `fetch()` outright — verified
+  live this session that identical requests succeed via `curl` but fail via Node `fetch()` even with a
+  full realistic Chrome header set (sec-ch-ua, Origin, Referer), which points at TLS/transport-level
+  fingerprinting rather than anything header-content can fix. Deliberately shipped anyway with a clear
+  403 fallback message (paste decklist text directly instead) rather than chasing a fingerprint-spoofing
+  dependency — that would be an arms race against Cloudflare's bot detection, not a stable fix.
 
 `build_budget_deck` is the composite tool: it pulls a commander's full EDHREC card pool, cross-references
 every candidate against Card Kingdom's full pricelist, and greedily fills 99 slots by synergy-per-dollar
@@ -98,3 +108,23 @@ other 10 tools hit). `connectRoom`/`sendAndAwait`/`withRoom` (ported from
 centralize that lifecycle so it's written once, not once per tool. `playtest_do_action`'s `type` field is
 also this file's first use of `z.enum(...)` — the wire-protocol action vocabulary is small and closed
 enough to validate directly rather than leaving it as a free-form string.
+
+## Deck-building final deliverable
+
+Whenever a conversation in this repo lands on a finished decklist — built via `build_budget_deck`,
+assembled manually, or fetched via `get_moxfield_decklist` — treat the job as unfinished until all of
+these are delivered, not just a card list:
+
+1. **A short summary** — the commander, the deck's strategy/theme, and a sentence or two on how it
+   actually wins.
+2. **Its bracket rating**, via `rate_deck_bracket` — stated plainly to the user, not computed silently
+   and left out of the final message.
+3. **Win conditions**, if any — combos `rate_deck_bracket`/`find_combos` surfaced, or the deck's primary
+   game plan if there's no hard combo piece.
+4. **A real playtest import** — `playtest_create_table` (label it with the actual commander/deck name,
+   never leave it as "Untitled table") followed by `playtest_load_deck` for that seat, so the user gets
+   a real `room_url` to open, not just a decklist to eyeball.
+5. **If a budget was ever mentioned**, confirm the actual final total via `get_deck_price_total` before
+   calling it done — this is a real, previously-hit failure mode: a decklist that started at $75 drifted
+   to $135 after manual swaps because nothing re-verified the total after the last edit. Re-check after
+   *every* swap, not just once at the start.

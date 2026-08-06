@@ -33,12 +33,12 @@ const FORGE_RAW_BASE = "https://raw.githubusercontent.com/Card-Forge/forge/maste
 // fetched once per lookup and filtered in memory rather than queried per-card.
 const CARDKINGDOM_PRICELIST_URL = "https://api.cardkingdom.com/api/v2/pricelist";
 
-// extensions/playtest-table — a SEPARATE local dev server (SvelteKit + Cloudflare Durable
-// Objects), not part of this MCP process and not a hosted/shared instance. Run
-// `npx wrangler dev --port 8787` from extensions/playtest-table before using any playtest_* tool
-// below; every one of them will fail fast with a clear message if that isn't running. Override
-// PLAYTEST_SERVER_URL if wrangler is bound to a different host/port. See extensions/README.md.
-const PLAYTEST_BASE = process.env.PLAYTEST_SERVER_URL || "http://127.0.0.1:8787";
+// extensions/playtest-table — a SEPARATE server (SvelteKit + Cloudflare Durable Objects), not
+// part of this MCP process. Deployed for real at PLAYTEST_BASE below (Cloudflare Workers Builds,
+// auto-deploys on every push to main) — a single shared instance every install of this MCP talks
+// to by default. Override PLAYTEST_SERVER_URL to point at a local `npx wrangler dev --port 8787`
+// instead (e.g. while developing playtest-table itself). See extensions/README.md.
+const PLAYTEST_BASE = process.env.PLAYTEST_SERVER_URL || "https://scryfall-mcp.playtest-table.workers.dev";
 const PLAYTEST_JSON_HEADERS = { "Content-Type": "application/json" };
 const PLAYTEST_TIMEOUT_MS = 5000;
 const PLAYTEST_ZONES = ["command", "library", "hand", "battlefield", "graveyard", "exile"];
@@ -46,6 +46,17 @@ const PLAYTEST_ZONES = ["command", "library", "hand", "battlefield", "graveyard"
 // Scryfall requires an accurate User-Agent and an Accept header on every request
 const HEADERS = {
   "User-Agent": "scryfall-mcp/1.0 (personal project)",
+  "Accept": "application/json",
+};
+
+// Moxfield has no official public API. api2.moxfield.com/v2/decks/all/<deckId> is the same
+// undocumented endpoint their own frontend calls — confirmed live this session (200 OK, full
+// mainboard/commanders/sideboard data, each keyed by card name with a nested Scryfall-sourced
+// `card` object). Unlike Scryfall, it 403s without a genuinely browser-like User-Agent — the
+// scryfall-mcp UA in HEADERS above does not work here, hence a separate header set.
+const MOXFIELD_API_BASE = "https://api2.moxfield.com/v2/decks/all";
+const MOXFIELD_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
   "Accept": "application/json",
 };
 
@@ -922,7 +933,7 @@ server.tool(
 // --- Tool 13: playtest_get_state ---
 server.tool(
   "playtest_get_state",
-  "Read the full current board state of a playtest table — every seat's life, hand (with mana cost inline), battlefield, library/graveyard/exile counts, and the recent game log. Use this to see what's happening before deciding a move with playtest_do_action. Requires `npx wrangler dev --port 8787` running in extensions/playtest-table.",
+  "Read the full current board state of a playtest table — every seat's life, hand (with mana cost inline), battlefield, library/graveyard/exile counts, and the recent game log. Use this to see what's happening before deciding a move with playtest_do_action. IMPORTANT: the returned `seats` array is how you know which seat_id to act on — each seat has `controller` ('human' or 'ai') and `label`. Before calling playtest_do_action, always confirm which seat you're actually meant to be playing (normally the one with controller:'ai') rather than assuming — acting on the wrong seat means playing someone else's cards for them. Requires `npx wrangler dev --port 8787` running in extensions/playtest-table.",
   {
     room_id: z.string().describe("Room id, from playtest_list_games or playtest_create_table"),
   },
@@ -942,7 +953,7 @@ server.tool(
   "Load a full Commander deck into one seat of an existing playtest table — either pasted decklist text (Moxfield-style export, e.g. lines like '1 Sol Ring' under an optional 'Commander' section header) or a random EDHREC average build (name a commander, or leave both decklist_text and commander_name blank for a random pick from a curated pool). Card names are resolved against Scryfall first, so every card in the resulting hand shows its real mana cost. Draws a fresh opening hand for that seat afterward by default. Requires `npx wrangler dev --port 8787` running in extensions/playtest-table.",
   {
     room_id: z.string().describe("Room id to load the deck into"),
-    seat_id: z.string().describe("Seat id, e.g. 'seat0' — see playtest_get_state or playtest_list_games for this room's actual seat ids"),
+    seat_id: z.string().describe("Seat id, e.g. 'seat0' — check playtest_get_state's `seats` array (controller + label per seat) first to confirm you're loading this deck onto the RIGHT seat, not just the first one listed."),
     decklist_text: z.string().optional().describe("Pasted decklist text. Provide this OR commander_name, not both — leave both blank for a fully random deck."),
     commander_name: z.string().optional().describe("Pull EDHREC's average decklist for this exact commander name. Leave blank (with decklist_text also blank) for a random commander from a curated pool."),
     auto_opening_hand: z.boolean().optional().describe("If true (default), draw a fresh 7-card opening hand for this seat right after loading."),
@@ -1008,7 +1019,7 @@ server.tool(
 // --- Tool 15: playtest_do_action ---
 server.tool(
   "playtest_do_action",
-  "Perform one game action on an existing playtest table's live board — move or tap a card, draw, shuffle, take a mulligan or opening hand, adjust life or a counter, add a card/token, remove a card, pass the turn, reset the board, permanently end the table, or run several of these as one batch. General-purpose escape hatch for everything except loading a full deck — use playtest_load_deck for that instead, since it handles the required Scryfall card-resolution step this tool does not. endTable is IRREVERSIBLE: it wipes the room's storage and removes it from the lobby list. For type 'batch', the 'actions' array uses the RAW wire field names (camelCase: cardName, fromZone, toZone, counterType — not this tool's own snake_case params), e.g. actions: [{\"type\":\"moveCard\",\"player\":\"seat0\",\"cardName\":\"Island\",\"fromZone\":\"hand\",\"toZone\":\"battlefield\"},{\"type\":\"toggleTap\",\"player\":\"seat0\",\"cardName\":\"Island\"},{\"type\":\"passTurn\"}]. Requires `npx wrangler dev --port 8787` running in extensions/playtest-table.",
+  "Perform one game action on an existing playtest table's live board — move or tap a card, draw, shuffle, take a mulligan or opening hand, adjust life or a counter, add a card/token, remove a card, pass the turn, reset the board, permanently end the table, or run several of these as one batch. General-purpose escape hatch for everything except loading a full deck — use playtest_load_deck for that instead, since it handles the required Scryfall card-resolution step this tool does not. BEFORE YOUR FIRST ACTION IN A ROOM: call playtest_get_state and check its `seats` array to find which seat_id you're actually meant to be playing (its `controller` field is 'human' or 'ai', and `claimedBy` shows if a human has claimed it) — this tool has no way to know that for you, and it will happily let you move a human player's cards if you pass the wrong seat_id as `player`. Don't guess or default to the first seat listed. endTable is IRREVERSIBLE: it wipes the room's storage and removes it from the lobby list. For type 'batch', the 'actions' array uses the RAW wire field names (camelCase: cardName, fromZone, toZone, counterType — not this tool's own snake_case params), e.g. actions: [{\"type\":\"moveCard\",\"player\":\"seat0\",\"cardName\":\"Island\",\"fromZone\":\"hand\",\"toZone\":\"battlefield\"},{\"type\":\"toggleTap\",\"player\":\"seat0\",\"cardName\":\"Island\"},{\"type\":\"passTurn\"}]. Requires `npx wrangler dev --port 8787` running in extensions/playtest-table.",
   {
     room_id: z.string().describe("Room id this action applies to"),
     type: z.enum([
@@ -1142,6 +1153,134 @@ server.tool(
     } catch (e) {
       return { content: [{ type: "text", text: `Bracket rating failed: ${e.message}` }] };
     }
+  }
+);
+
+// --- Tool 17: get_moxfield_decklist ---
+server.tool(
+  "get_moxfield_decklist",
+  "Fetch and parse a Commander decklist from a pasted Moxfield deck URL (or bare deck id). Returns the commander(s), the full mainboard, a ready-to-paste Moxfield-style decklist_text (drop it straight into playtest_load_deck's decklist_text param), and a flat card_names list (feed straight into rate_deck_bracket to check its power level, or get_deck_price_total to check its real cost). Source: Moxfield's own undocumented frontend API — no official public API exists, so this may break if Moxfield changes it without notice. KNOWN ISSUE: Moxfield's anti-bot protection sometimes blocks this request outright (403) even with realistic browser headers — if that happens, ask the user to paste the decklist text directly instead of retrying the URL, since rate_deck_bracket/playtest_load_deck both accept pasted text with no Moxfield fetch involved.",
+  {
+    url: z.string().describe("A Moxfield deck URL, e.g. 'https://www.moxfield.com/decks/J1bHQXIJ80W3_oWaufGk5Q', or just the bare deck id"),
+  },
+  async ({ url }) => {
+    const match = url.match(/decks\/([^/?#]+)/);
+    const deckId = match ? match[1] : url.trim();
+    if (!deckId) {
+      return { content: [{ type: "text", text: "Couldn't find a deck id in that URL." }] };
+    }
+
+    let res;
+    try {
+      res = await fetch(`${MOXFIELD_API_BASE}/${encodeURIComponent(deckId)}`, { headers: MOXFIELD_HEADERS });
+    } catch (e) {
+      return { content: [{ type: "text", text: `Couldn't reach Moxfield: ${e.message}. Paste the decklist text directly instead (rate_deck_bracket and playtest_load_deck both accept it).` }] };
+    }
+    if (res.status === 404) {
+      return { content: [{ type: "text", text: `No Moxfield deck found at that URL (deck id: ${deckId}) — it may be private, deleted, or the URL/id may be wrong.` }] };
+    }
+    if (res.status === 403) {
+      return {
+        content: [{
+          type: "text",
+          text: "Moxfield blocked this request (its anti-bot protection sometimes rejects non-browser " +
+            "requests, even with realistic headers — this isn't about this specific deck or URL). " +
+            "Ask the user to paste the decklist text directly instead — both rate_deck_bracket " +
+            "(card_names) and playtest_load_deck (decklist_text) accept a pasted list with no " +
+            "Moxfield fetch required.",
+        }],
+      };
+    }
+    if (!res.ok) {
+      return { content: [{ type: "text", text: `Moxfield request failed: ${res.status} ${res.statusText}` }] };
+    }
+
+    const data = await res.json();
+    const commanderEntries = Object.values(data.commanders ?? {});
+    const mainboardEntries = Object.values(data.mainboard ?? {});
+
+    const commander_names = commanderEntries.map((e) => e.card?.name).filter(Boolean);
+    const deckEntries = mainboardEntries
+      .map((e) => ({ qty: e.quantity ?? 1, name: e.card?.name }))
+      .filter((e) => e.name);
+    const card_names = [...commander_names, ...deckEntries.map((e) => e.name)];
+
+    const textLines = ["Commander", ...commander_names.map((n) => `1 ${n}`), "", "Deck", ...deckEntries.map((e) => `${e.qty} ${e.name}`)];
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          deck_name: data.name,
+          format: data.format,
+          commander_names,
+          card_names,
+          deck_entries: deckEntries,
+          decklist_text: textLines.join("\n"),
+          note: "decklist_text is ready to paste into playtest_load_deck's decklist_text param as-is. card_names is ready for rate_deck_bracket or get_deck_price_total.",
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+// --- Tool 18: get_deck_price_total ---
+server.tool(
+  "get_deck_price_total",
+  "Sum Card Kingdom's real retail price across an entire decklist in one call — the standardized price check for this server (see search_cards/get_cardkingdom_price for why Scryfall's bundled 'usd' field isn't used for this). Use this as a final check after ANY manual swap during deck-building, not just at the start — a card total can drift over budget silently if a swap's price isn't re-verified. Reports which cards (if any) weren't found in Card Kingdom's in-stock pricelist, since the total is necessarily a floor (not exact) when cards are missing.",
+  {
+    card_names: z.array(z.string()).min(1).describe("Every card in the decklist (commander + all nonland/land cards). Duplicate basic land names are fine — include a name once per copy if you want it priced per-copy, or once total if you only care about unique cards."),
+    include_foil: z.boolean().optional().describe("If true, allow foil listings when finding each card's cheapest price. Default false (non-foil only)."),
+  },
+  async ({ card_names, include_foil }) => {
+    const res = await fetch(CARDKINGDOM_PRICELIST_URL, { headers: HEADERS });
+    if (!res.ok) {
+      return { content: [{ type: "text", text: `Card Kingdom pricelist request failed: ${res.status} ${res.statusText}` }] };
+    }
+    const body = await res.json();
+    const products = body?.data ?? [];
+
+    // Cheapest non-foil (or foil, if allowed) in-stock price per card name, built once.
+    const priceByName = new Map();
+    for (const p of products) {
+      const isFoil = p.is_foil === true || p.is_foil === "true";
+      if (isFoil && !include_foil) continue;
+      const qty = Number(p.qty_retail ?? 0);
+      if (qty <= 0) continue;
+      const price = parseFloat(p.price_retail);
+      if (isNaN(price)) continue;
+      const nameLower = (p.name ?? "").toLowerCase();
+      const existing = priceByName.get(nameLower);
+      if (!existing || price < existing) priceByName.set(nameLower, price);
+    }
+
+    const priced = [];
+    const notFound = [];
+    for (const name of card_names) {
+      const price = priceByName.get(name.trim().toLowerCase());
+      if (price === undefined) {
+        notFound.push(name);
+      } else {
+        priced.push({ name, price_usd: price });
+      }
+    }
+
+    const total = Math.round(priced.reduce((sum, c) => sum + c.price_usd, 0) * 100) / 100;
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          total_usd: total,
+          cards_priced: priced.length,
+          cards_not_found: notFound.length ? notFound : undefined,
+          note: notFound.length
+            ? `${notFound.length} card(s) not found in Card Kingdom's in-stock pricelist — total_usd is a FLOOR, the real total is at least this much.`
+            : "Every card was found and priced — total_usd should be the full, accurate deck cost.",
+          breakdown: priced.sort((a, b) => b.price_usd - a.price_usd),
+        }, null, 2),
+      }],
+    };
   }
 );
 
