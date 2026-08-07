@@ -11,6 +11,37 @@ import { z } from "zod";
 // Scryfall is the official, documented MTG card database API — no API key needed.
 const SCRYFALL_BASE = "https://api.scryfall.com";
 
+// Scryfall's documented hard rate limits: /cards/search, /cards/named, /cards/random, and
+// /cards/collection are each 2/second (500ms apart); everything else is 10/second (100ms apart).
+// A small safety margin is added on top of both (520ms/110ms) rather than the bare minimum.
+const SCRYFALL_MIN_INTERVAL_MS = { search: 520, named: 520, random: 520, collection: 520, default: 110 };
+const scryfallLastRequestAt = { search: 0, named: 0, random: 0, collection: 0, default: 0 };
+
+// Proactively paces every Scryfall call by endpoint category — not just reactive retry-after-429.
+// This module-level state persists for this MCP process's entire session lifetime, so it actually
+// coordinates separate tool calls fired back-to-back (e.g. rate_deck_bracket then
+// analyze_deck_consistency in the same final-delivery turn), not just chunks within one call.
+// EVERY Scryfall fetch in this file must go through this — a raw fetch(SCRYFALL_BASE...) bypasses
+// the pacing entirely and risks a real 429/ban, which is exactly what prompted this.
+async function scryfallFetch(url, options, category = "default") {
+  const minInterval = SCRYFALL_MIN_INTERVAL_MS[category] ?? SCRYFALL_MIN_INTERVAL_MS.default;
+  const waitMs = scryfallLastRequestAt[category] + minInterval - Date.now();
+  if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+  scryfallLastRequestAt[category] = Date.now();
+
+  const res = await fetch(url, options);
+  if (res.status === 429) {
+    // Scryfall's own documented behavior: a 429 means a fixed ~30s penalty window, not a transient
+    // blip — one wait-then-retry (honoring Retry-After if present) matches that directly, rather
+    // than a generic exponential-backoff loop meant for transient network errors.
+    const retryMs = Math.min((Number(res.headers.get("Retry-After")) || 30) * 1000, 30000);
+    await new Promise((r) => setTimeout(r, retryMs));
+    scryfallLastRequestAt[category] = Date.now();
+    return fetch(url, options);
+  }
+  return res;
+}
+
 const COMMANDER_SPELLBOOK_BASE = "https://backend.commanderspellbook.com";
 
 // EDHREC has no official API — this hits the same undocumented JSON endpoints
@@ -349,17 +380,16 @@ async function classifyComboSpeed(combos) {
 
   for (let i = 0; i < allPieceNames.length; i += 75) {
     const chunk = allPieceNames.slice(i, i + 75);
-    const res = await fetch(`${SCRYFALL_BASE}/cards/collection`, {
+    const res = await scryfallFetch(`${SCRYFALL_BASE}/cards/collection`, {
       method: "POST",
       headers: { ...HEADERS, "Content-Type": "application/json" },
       body: JSON.stringify({ identifiers: chunk.map((name) => ({ name })) }),
-    });
+    }, "collection");
     if (!res.ok) continue;
     const data = await res.json();
     for (const card of data.data ?? []) {
       cmcByName.set(card.name.toLowerCase(), card.cmc ?? 0);
     }
-    if (i + 75 < allPieceNames.length) await new Promise((r) => setTimeout(r, 80));
   }
 
   return combos.map((c) => {
@@ -412,7 +442,7 @@ server.tool(
   },
   async ({ query, max_price_usd }) => {
     const url = `${SCRYFALL_BASE}/cards/search?q=${encodeURIComponent(query)}`;
-    const res = await fetch(url, { headers: HEADERS });
+    const res = await scryfallFetch(url, { headers: HEADERS }, "search");
 
     if (!res.ok) {
       return {
@@ -455,7 +485,7 @@ server.tool(
   },
   async ({ name }) => {
     const url = `${SCRYFALL_BASE}/cards/named?fuzzy=${encodeURIComponent(name)}`;
-    const res = await fetch(url, { headers: HEADERS });
+    const res = await scryfallFetch(url, { headers: HEADERS }, "named");
 
     if (!res.ok) {
       return {
@@ -488,13 +518,13 @@ server.tool(
     name: z.string().describe("Exact card name, e.g. 'Oko, Thief of Crowns'"),
   },
   async ({ name }) => {
-    const cardRes = await fetch(`${SCRYFALL_BASE}/cards/named?exact=${encodeURIComponent(name)}`, { headers: HEADERS });
+    const cardRes = await scryfallFetch(`${SCRYFALL_BASE}/cards/named?exact=${encodeURIComponent(name)}`, { headers: HEADERS }, "named");
     if (!cardRes.ok) {
       return { content: [{ type: "text", text: `Card not found: ${name}` }] };
     }
     const card = await cardRes.json();
 
-    const rulingsRes = await fetch(card.rulings_uri, { headers: HEADERS });
+    const rulingsRes = await scryfallFetch(card.rulings_uri, { headers: HEADERS }, "default");
     const rulingsData = await rulingsRes.json();
     const rulings = (rulingsData.data ?? []).map((r) => r.comment);
 
@@ -1346,11 +1376,11 @@ server.tool(
       const notFound = [];
       for (let i = 0; i < allIdentifierNames.length; i += 75) {
         const chunk = allIdentifierNames.slice(i, i + 75);
-        const res = await fetch(`${SCRYFALL_BASE}/cards/collection`, {
+        const res = await scryfallFetch(`${SCRYFALL_BASE}/cards/collection`, {
           method: "POST",
           headers: { ...HEADERS, "Content-Type": "application/json" },
           body: JSON.stringify({ identifiers: chunk.map((name) => ({ name })) }),
-        });
+        }, "collection");
         if (!res.ok) {
           return { content: [{ type: "text", text: `Scryfall collection request failed: ${res.status} ${res.statusText}` }] };
         }
@@ -1361,7 +1391,6 @@ server.tool(
         for (const nf of data.not_found ?? []) {
           if (nf?.name) notFound.push(nf.name);
         }
-        if (i + 75 < allIdentifierNames.length) await new Promise((r) => setTimeout(r, 80));
       }
 
       const isLand = (card) => (card?.type_line ?? "").includes("Land");

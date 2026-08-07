@@ -44,21 +44,39 @@ export interface ResolveResult {
 	notFound: string[];
 }
 
+// Scryfall's documented hard limit for /cards/collection is 2/second (500ms apart) — a small
+// safety margin (520ms) is added on top. This module-level timestamp persists for as long as this
+// Worker instance/isolate stays warm, so it paces resolveCardInfo's own chunk-to-chunk requests
+// AND, best-effort, requests from other nearby calls sharing the same warm isolate.
+const SCRYFALL_COLLECTION_MIN_INTERVAL_MS = 520;
+let lastScryfallCollectionRequestAt = 0;
+
 // A refused-connection-style problem for this file: Scryfall rate-limits by client IP, and
 // Cloudflare Workers egress through a shared IP pool (not a dedicated per-project IP) — meaning
 // this Worker can get 429'd by Scryfall's rate limiter even at modest request volume, in a way
 // that never showed up testing locally (where outbound requests went through the dev machine's
 // own IP instead). Retries a 429 a few times with backoff (respecting Retry-After if Scryfall
 // sends one) before giving up, rather than failing the whole deck load on the first rate limit hit.
-async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3): Promise<Response> {
+// `paceAsScryfallCollection` additionally enforces PROACTIVE pacing before the request even goes
+// out (not just reactive backoff after a 429) — only meaningful for actual Scryfall calls, so the
+// EDHREC call site below (which has no such documented limit) leaves it off.
+async function fetchWithRetry(
+	url: string, options: RequestInit, maxRetries = 3, paceAsScryfallCollection = false
+): Promise<Response> {
+	if (paceAsScryfallCollection) {
+		const waitMs = lastScryfallCollectionRequestAt + SCRYFALL_COLLECTION_MIN_INTERVAL_MS - Date.now();
+		if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+		lastScryfallCollectionRequestAt = Date.now();
+	}
 	for (let attempt = 0; ; attempt++) {
 		const res = await fetch(url, options);
 		if (res.status !== 429 || attempt >= maxRetries) return res;
 		const retryAfterHeader = res.headers.get('Retry-After');
 		const waitMs = retryAfterHeader
-			? Math.min((Number(retryAfterHeader) || 1) * 1000, 5000)
+			? Math.min((Number(retryAfterHeader) || 1) * 1000, 30000)
 			: 400 * Math.pow(2, attempt);
 		await new Promise((r) => setTimeout(r, waitMs));
+		if (paceAsScryfallCollection) lastScryfallCollectionRequestAt = Date.now();
 	}
 }
 
@@ -83,7 +101,7 @@ export async function resolveCardInfo(names: string[]): Promise<ResolveResult> {
 			method: 'POST',
 			headers: { ...HEADERS, 'Content-Type': 'application/json' },
 			body: JSON.stringify({ identifiers: chunk.map((name) => ({ name })) })
-		});
+		}, 3, true);
 		if (!res.ok) {
 			throw new Error(`Scryfall collection request failed: ${res.status} ${res.statusText}`);
 		}
@@ -102,8 +120,6 @@ export async function resolveCardInfo(names: string[]): Promise<ResolveResult> {
 		for (const nf of data.not_found ?? []) {
 			if (nf?.name) notFound.push(nf.name);
 		}
-		// Scryfall asks for a light delay between requests from the same client.
-		if (i + 75 < unique.length) await new Promise((r) => setTimeout(r, 80));
 	}
 
 	return { cardInfo, notFound };
