@@ -11,24 +11,30 @@
 	// An opaque seat id, not a closed 2-value union — the valid set for this room is whatever
 	// game.seats contains.
 	type PlayerKey = string;
-	interface Card { id: string; name: string; tapped?: boolean; counters?: Record<string, number> }
+	interface Card { id: string; name: string; tapped?: boolean; counters?: Record<string, number>; summoningSick?: boolean }
 	interface PlayerState {
 		label: string; life: number;
 		command: Card[]; library: Card[]; hand: Card[]; battlefield: Card[]; graveyard: Card[]; exile: Card[];
 		mulligans: number;
 	}
 	interface SeatDef { id: string; label: string; controller: 'human' | 'ai'; claimedBy: string | null }
-	interface CardInfoEntry { name: string; image: string | null; typeLine: string; manaCost?: string; oracleText?: string }
+	interface CardInfoEntry {
+		name: string; image: string | null; typeLine: string; manaCost?: string; oracleText?: string;
+		power?: string | null; toughness?: string | null;
+	}
 	interface ResolveDeckResponse { cardInfo: Record<string, CardInfoEntry>; notFound: string[]; error?: string }
 	interface RandomDeckResponse extends ResolveDeckResponse {
 		commander: string[]; deckEntries: { qty: number; name: string }[]; sourceCommander: string;
 	}
+	interface CombatState { attackerSeat: PlayerKey; defenderSeat: PlayerKey; attackers: string[] }
 	interface GameState {
 		revision: number; turn: number; active: PlayerKey;
 		log: { who: PlayerKey | 'system'; text: string }[];
 		seats: SeatDef[];
 		players: Record<PlayerKey, PlayerState>;
 		cardInfo: Record<string, CardInfoEntry>;
+		combat?: CombatState;
+		pendingDiscard?: { player: PlayerKey; count: number };
 	}
 
 	let roomId = $derived(page.params.roomId);
@@ -180,6 +186,86 @@
 			(groups[cat] ??= []).push(c);
 		}
 		return groups;
+	}
+
+	// --- combat / discard ---------------------------------------------------------------------
+	// Simple oracle-text substring check — mirrors game-room.ts's hasKeyword(), used client-side
+	// only to decide what to visually enable/dim; the server is still the real source of truth and
+	// will reject anything illegal regardless of what this lets you click.
+	function hasKeyword(name: string, phrase: string): boolean {
+		return (lookupCard(name)?.oracleText ?? '').toLowerCase().includes(phrase.toLowerCase());
+	}
+
+	let attackModeOn = $state(false);
+	let selectedAttackers = $state<Set<string>>(new Set());
+	let selectedAttackerForBlocking = $state<string | null>(null);
+	let blockAssignments = $state<Record<string, string[]>>({});
+	let discardSelected = $state<Set<string>>(new Set());
+
+	let myEligibleAttackers = $derived.by((): Card[] => {
+		if (!game || !mySeatId) return [];
+		return game.players[mySeatId].battlefield.filter((c) => {
+			const isCreature = (lookupCard(c.name)?.typeLine ?? '').includes('Creature');
+			return isCreature && !c.tapped && (!c.summoningSick || hasKeyword(c.name, 'haste'));
+		});
+	});
+
+	function startAttackMode() {
+		attackModeOn = true;
+		selectedAttackers = new Set();
+	}
+	function cancelAttackMode() {
+		attackModeOn = false;
+		selectedAttackers = new Set();
+	}
+	function toggleAttackerSelect(cardId: string) {
+		const next = new Set(selectedAttackers);
+		if (next.has(cardId)) next.delete(cardId);
+		else next.add(cardId);
+		selectedAttackers = next;
+	}
+	function confirmAttack() {
+		send({ type: 'declareAttackers', player: mySeatId, cardIds: Array.from(selectedAttackers) });
+		attackModeOn = false;
+		selectedAttackers = new Set();
+	}
+
+	// Toggling always strips the card from every attacker's list first, then re-adds it to the
+	// currently-selected attacker only if it wasn't already assigned there — this makes "reassign a
+	// blocker to a different attacker" and "unassign" the same simple toggle gesture.
+	function toggleBlockerSelect(cardId: string) {
+		if (!selectedAttackerForBlocking) return;
+		const atk = selectedAttackerForBlocking;
+		const wasOnAtk = (blockAssignments[atk] ?? []).includes(cardId);
+		const next: Record<string, string[]> = {};
+		for (const [k, ids] of Object.entries(blockAssignments)) {
+			const filtered = ids.filter((id) => id !== cardId);
+			if (filtered.length) next[k] = filtered;
+		}
+		if (!wasOnAtk) next[atk] = [...(next[atk] ?? []), cardId];
+		blockAssignments = next;
+	}
+	function confirmBlocks() {
+		send({ type: 'declareBlockers', player: mySeatId, blocks: blockAssignments });
+		selectedAttackerForBlocking = null;
+		blockAssignments = {};
+	}
+	function noBlocks() {
+		send({ type: 'declareBlockers', player: mySeatId, blocks: {} });
+		selectedAttackerForBlocking = null;
+		blockAssignments = {};
+	}
+
+	function toggleDiscardSelect(cardId: string) {
+		const next = new Set(discardSelected);
+		if (next.has(cardId)) next.delete(cardId);
+		else next.add(cardId);
+		discardSelected = next;
+	}
+	function confirmDiscard() {
+		if (!game?.pendingDiscard) return;
+		send({ type: 'discard', player: mySeatId, cardIds: Array.from(discardSelected) });
+		discardSelected = new Set();
 	}
 
 	function send(action: Record<string, unknown>) {
@@ -436,14 +522,6 @@
 			</span>
 			{#if allAi}<span class="spectator-chip">Spectating &mdash; AI vs AI</span>{/if}
 		</div>
-		{#if mySeat}
-			<div class="end-turn-row">
-				<button class="btn {resetArmed ? 'danger-txt' : ''}" onclick={clickReset}>
-					{resetArmed ? 'Click again to confirm reset' : 'Reset table'}
-				</button>
-				<button class="btn purple" onclick={() => send({ type: 'passTurn' })}>Pass turn &rarr;</button>
-			</div>
-		{/if}
 	</div>
 
 	<div class="board">
@@ -503,6 +581,27 @@
 						<div class="hand-setup">
 							<button class="btn small" onclick={() => send({ type: 'openingHand', player: key })}>Opening 7</button>
 							<button class="btn small" onclick={() => send({ type: 'mulligan', player: key })}>Mulligan ({p.mulligans})</button>
+						</div>
+						{@const pendingReason = game!.pendingDiscard
+							? `Discard ${game!.pendingDiscard.count} card(s) first`
+							: game!.combat
+								? (game!.combat.defenderSeat === mySeatId ? 'Declare your blocks first' : `Waiting for ${seatLabel(game!.combat.defenderSeat)} to declare blocks…`)
+								: ''}
+						<div class="turn-controls">
+							{#if game!.active === mySeatId && !pendingReason && myEligibleAttackers.length && !attackModeOn}
+								<button class="btn small" onclick={startAttackMode}>Declare attackers</button>
+							{/if}
+							<button
+								class="btn purple"
+								disabled={!!pendingReason}
+								title={pendingReason || undefined}
+								onclick={() => send({ type: 'passTurn' })}
+							>
+								Pass turn &rarr;
+							</button>
+							<button class="btn small {resetArmed ? 'danger-txt' : ''}" onclick={clickReset}>
+								{resetArmed ? 'Confirm reset' : 'Reset table'}
+							</button>
 						</div>
 					{/if}
 				</div>
@@ -577,20 +676,80 @@
 		{#if otherSeat}{@render playerRow(otherSeat)}{/if}
 
 		{#snippet battlefieldCardChip(key: PlayerKey, c: Card)}
-			<div class="card-chip bf-card {c.tapped ? 'tapped' : ''}">
-				<button class="chip-main" disabled={key !== mySeatId} onclick={() => send({ type: 'toggleTap', player: key, cardId: c.id })} title={c.name}>
+			{@const info = lookupCard(c.name)}
+			{@const isCreature = (info?.typeLine ?? '').includes('Creature')}
+			{@const inAttackMode = attackModeOn && key === mySeatId}
+			{@const inBlockMode = key === mySeatId && game?.combat?.defenderSeat === mySeatId && !!selectedAttackerForBlocking}
+			{@const alreadyBlocking = Object.values(blockAssignments).some((ids) => ids.includes(c.id))}
+			{@const attackEligible = isCreature && !c.tapped && (!c.summoningSick || hasKeyword(c.name, 'haste'))}
+			{@const blockEligible = isCreature && !c.tapped && !alreadyBlocking}
+			{@const selectedAsAttacker = selectedAttackers.has(c.id)}
+			{@const selectedAsBlocker = selectedAttackerForBlocking ? (blockAssignments[selectedAttackerForBlocking] ?? []).includes(c.id) : false}
+			{@const combatSelected = (inAttackMode && selectedAsAttacker) || (inBlockMode && selectedAsBlocker)}
+			{@const combatIneligible = (inAttackMode && !attackEligible) || (inBlockMode && !blockEligible && !selectedAsBlocker)}
+			<div class="card-chip bf-card {c.tapped ? 'tapped' : ''} {combatSelected ? 'selected-for-combat' : ''} {combatIneligible ? 'combat-ineligible' : ''}">
+				<button
+					class="chip-main"
+					disabled={inAttackMode ? !attackEligible : inBlockMode ? (!blockEligible && !selectedAsBlocker) : key !== mySeatId}
+					onclick={() => {
+						if (inAttackMode) return toggleAttackerSelect(c.id);
+						if (inBlockMode) return toggleBlockerSelect(c.id);
+						send({ type: 'toggleTap', player: key, cardId: c.id });
+					}}
+					title={c.summoningSick ? `${c.name} — summoning sickness` : c.name}
+				>
 					{@render cardImg(c.name)}
-					<span class="cname">{c.name}</span>
+					<span class="cname">{c.name}{#if info?.power != null && info?.toughness != null} ({info.power}/{info.toughness}){/if}</span>
 					{#if c.counters && Object.keys(c.counters).length}
 						<span class="counter-badge">{Object.entries(c.counters).map(([t, n]) => `${n} ${t}`).join(', ')}</span>
 					{/if}
 				</button>
 				<button class="menu-btn zoom-btn" onclick={(e) => { e.stopPropagation(); openZoom(c.name); }} title="View larger">&#128269;</button>
-				{#if key === mySeatId}
+				{#if key === mySeatId && !inAttackMode && !inBlockMode}
 					<button class="menu-btn" onclick={(e) => { e.stopPropagation(); openZoneMenu(key, 'battlefield', c, e.currentTarget); }} title="Move to another zone">&#8942;</button>
 				{/if}
 			</div>
 		{/snippet}
+
+		{#if game.combat && (game.combat.attackerSeat === mySeatId || game.combat.defenderSeat === mySeatId)}
+			{@const combat = game.combat}
+			<div class="combat-banner">
+				{#if combat.defenderSeat === mySeatId}
+					<div class="combat-title">Incoming attack — declare blocks</div>
+					<div class="attacker-chip-row">
+						{#each combat.attackers as attackerId (attackerId)}
+							{@const attackerCard = game.players[combat.attackerSeat].battlefield.find((c) => c.id === attackerId)}
+							{#if attackerCard}
+								{@const info = lookupCard(attackerCard.name)}
+								{@const blockedBy = blockAssignments[attackerId]?.length ?? 0}
+								<button
+									type="button"
+									class="attacker-select-chip {selectedAttackerForBlocking === attackerId ? 'active' : ''}"
+									onclick={() => (selectedAttackerForBlocking = attackerId)}
+								>
+									{@render cardImg(attackerCard.name)}
+									<span class="cname">
+										{attackerCard.name}{#if info?.power != null} ({info.power}/{info.toughness}){/if}
+										{#if blockedBy} &mdash; blocked by {blockedBy}{/if}
+									</span>
+								</button>
+							{/if}
+						{/each}
+					</div>
+					<div class="combat-actions">
+						<span class="combat-hint">
+							{selectedAttackerForBlocking ? 'Click your untapped creatures below to assign blockers.' : 'Select an attacker above to assign blockers.'}
+						</span>
+						<button type="button" class="btn" onclick={noBlocks}>No blocks</button>
+						<button type="button" class="btn purple" onclick={confirmBlocks}>Declare blocks</button>
+					</div>
+				{:else}
+					<div class="combat-title">
+						Attacking with {combat.attackers.length} creature(s) &mdash; waiting for {seatLabel(combat.defenderSeat)} to declare blocks&hellip;
+					</div>
+				{/if}
+			</div>
+		{/if}
 
 		<div class="shared-battlefield">
 			{#each displaySeats.filter((s): s is SeatDef => !!s) as seat, i (seat.id)}
@@ -605,6 +764,13 @@
 							<input type="text" bind:value={cardInput} placeholder="Add a card or token to your battlefield" />
 							<button type="submit" class="btn small">Add</button>
 						</form>
+						{#if attackModeOn}
+							<div class="attack-confirm-bar">
+								<span>Attacking with {selectedAttackers.size} creature(s)</span>
+								<button type="button" class="btn" onclick={cancelAttackMode}>Cancel</button>
+								<button type="button" class="btn purple" disabled={!selectedAttackers.size} onclick={confirmAttack}>Confirm attack</button>
+							</div>
+						{/if}
 					{/if}
 					{#if !p.battlefield.length}
 						<div class="empty-hint">No permanents in play</div>
@@ -655,6 +821,34 @@
 			<button onclick={() => { send({ type: 'adjustCounter', player: zoneMenu!.player, cardId: zoneMenu!.cardId, counterType: '+1/+1', delta: 1 }); closeZoneMenu(); }}>+1/+1 counter</button>
 			<button onclick={() => { send({ type: 'adjustCounter', player: zoneMenu!.player, cardId: zoneMenu!.cardId, counterType: '+1/+1', delta: -1 }); closeZoneMenu(); }}>&minus;1/&minus;1 counter</button>
 		{/if}
+	</div>
+{/if}
+
+{#if game && game.pendingDiscard && game.pendingDiscard.player === mySeatId}
+	{@const myHand = game.players[mySeatId].hand}
+	{@const count = game.pendingDiscard.count}
+	<div class="card-modal-backdrop">
+		<div class="card-modal discard-modal" onclick={(e) => e.stopPropagation()}>
+			<div class="card-modal-name">Discard {count} card(s) &mdash; hand is over the limit</div>
+			<div class="discard-hand-grid">
+				{#each myHand as c (c.id)}
+					{@const known = lookupCard(c.name)}
+					<div class="card-chip {discardSelected.has(c.id) ? 'selected-for-combat' : ''}">
+						<button class="chip-main" onclick={() => toggleDiscardSelect(c.id)} title={c.name}>
+							{#if known?.image}
+								<img src={known.image} alt="" loading="lazy" />
+							{:else}
+								<div class="text-fallback">{c.name}</div>
+							{/if}
+							<span class="cname">{c.name}</span>
+						</button>
+					</div>
+				{/each}
+			</div>
+			<button class="btn purple card-modal-close" disabled={discardSelected.size !== count} onclick={confirmDiscard}>
+				Confirm discard ({discardSelected.size}/{count})
+			</button>
+		</div>
 	</div>
 {/if}
 
@@ -709,7 +903,7 @@
 
 	.page-wrap { width: 100%; max-width: 78rem; margin: 0 auto; display: flex; flex-direction: column; gap: 0.9rem; }
 
-	.toolbar, .import-panel, .turn-bar, .player-row, .shared-battlefield, .spine {
+	.toolbar, .import-panel, .turn-bar, .player-row, .shared-battlefield, .spine, .combat-banner {
 		background: var(--surface-zone); border: 1px solid var(--border); border-radius: 12px;
 	}
 	.toolbar { padding: 0.85rem 1.1rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1.25rem; }
@@ -768,7 +962,6 @@
 	.active-chip.mine { color: var(--ok); border-color: var(--ok); }
 	.active-chip.theirs { color: var(--accent); border-color: var(--accent); }
 	.spectator-chip { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 0.2rem 0.55rem; border-radius: 999px; border: 1px dashed var(--fg-dim); color: var(--fg-dim); }
-	.end-turn-row { display: flex; gap: 0.5rem; }
 
 	.board { display: flex; flex-direction: column; gap: 0.9rem; }
 	.player-row {
@@ -795,6 +988,8 @@
 	.lib-value { font-family: var(--font-display); font-size: 1.15rem; color: var(--fg); }
 	.hand-setup { display: flex; flex-direction: column; gap: 0.3rem; }
 	.hand-setup button { width: 100%; }
+	.turn-controls { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.2rem; }
+	.turn-controls button { width: 100%; }
 
 	.seat-claim {
 		font-size: 0.68rem; text-align: center; padding: 0.3rem 0.4rem; border-radius: 7px;
@@ -817,10 +1012,12 @@
 	.card-grid, .hand-strip, .mini-list { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 	.mini-list { gap: 0.3rem; }
 
-	.card-chip { position: relative; width: 4.6rem; }
+	.card-chip { position: relative; width: 6.6rem; }
 	.card-chip.mini { width: 2.4rem; }
-	.hand-strip .card-chip { width: 3.6rem; }
+	.hand-strip .card-chip { width: 5.2rem; }
 	.card-chip.tapped .chip-main { transform: rotate(90deg); }
+	.card-chip.selected-for-combat .chip-main { outline: 3px solid var(--ok); outline-offset: -1px; }
+	.card-chip.combat-ineligible { opacity: 0.4; }
 	.chip-main {
 		display: block; width: 100%; background: var(--surface-raised); border: 1px solid var(--border);
 		border-radius: 7px; overflow: hidden; padding: 0; text-align: left; color: inherit;
@@ -854,9 +1051,36 @@
 	.sb-half.mine .sb-label { color: var(--ok); font-weight: 700; font-size: 0.85rem; }
 	.sb-half.theirs .sb-label { color: var(--accent); font-weight: 600; }
 	.sb-divider { height: 1px; background: var(--border); margin: 0.2rem 0; }
-	.bf-category { display: flex; flex-direction: column; gap: 0.35rem; }
+	.bf-category {
+		display: flex; flex-direction: column; gap: 0.45rem; background: var(--surface-slot);
+		border: 1px solid var(--border); border-radius: 9px; padding: 0.5rem 0.6rem;
+	}
 	.bf-cat-label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-dim); opacity: 0.75; }
-	.bf-card { width: 6rem; }
+	.bf-card { width: 8.5rem; }
+
+	.attack-confirm-bar {
+		display: flex; align-items: center; gap: 0.6rem; font-size: 0.82rem; padding: 0.4rem 0.1rem;
+	}
+	.attack-confirm-bar button { flex-shrink: 0; }
+
+	.combat-banner {
+		padding: 0.8rem 1.1rem; display: flex; flex-direction: column; gap: 0.6rem;
+		border: 2px solid var(--accent);
+	}
+	.combat-title { font-size: 0.9rem; font-weight: 600; color: var(--accent); }
+	.attacker-chip-row { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+	.attacker-select-chip {
+		display: flex; flex-direction: column; align-items: center; gap: 0.3rem; width: 6.6rem;
+		background: var(--surface-slot); border: 2px solid var(--border); border-radius: 9px;
+		padding: 0.4rem; color: var(--fg); font-size: 0.68rem; text-align: center;
+	}
+	.attacker-select-chip :global(img) { width: 100%; aspect-ratio: 5/7; object-fit: cover; border-radius: 6px; }
+	.attacker-select-chip.active { border-color: var(--accent); }
+	.combat-actions { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+	.combat-hint { font-size: 0.78rem; color: var(--fg-dim); margin-right: auto; }
+
+	.discard-modal { max-width: min(90vw, 34rem); }
+	.discard-hand-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center; }
 
 	.side-zones { display: flex; flex-direction: column; gap: 0.6rem; }
 	.mini-zone { background: var(--surface-slot); border: 1px solid var(--border); border-radius: 9px; padding: 0.5rem 0.6rem; flex: 1; }

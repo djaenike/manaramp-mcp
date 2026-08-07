@@ -15,7 +15,7 @@ const MAX_TOKENS = 1536;
 // invoke (e.g. mulligan would reshuffle an established hand back into the library mid-game).
 const ACTION_TYPES = [
 	'moveCard', 'toggleTap', 'draw', 'shuffleLibrary',
-	'adjustLife', 'passTurn', 'addCard', 'removeCard', 'adjustCounter'
+	'adjustLife', 'passTurn', 'addCard', 'removeCard', 'adjustCounter', 'declareAttackers'
 ];
 
 const SUBMIT_TURN_TOOL = {
@@ -26,8 +26,11 @@ const SUBMIT_TURN_TOOL = {
 		'or create a token; moveCard to change a card\'s zone (e.g. hand -> battlefield, or -> graveyard ' +
 		'when it dies); toggleTap to tap/untap something for mana or an ability; adjustLife/adjustCounter ' +
 		'for damage, life swings, and +1/+1 or loyalty counters; draw for any extra card draw beyond the ' +
-		'automatic turn draw you already received. End the list with a passTurn action once your turn is ' +
-		'complete so play moves to the next seat.',
+		'automatic turn draw you already received; declareAttackers to attack (damage resolves ' +
+		'automatically once blocks are decided — you do not need to adjust life for combat yourself). ' +
+		'End the list with a passTurn action once your turn is complete so play moves to the next seat ' +
+		'— if you attacked and blocks are still pending, passTurn will simply fail harmlessly and be ' +
+		'retried automatically once combat resolves.',
 	input_schema: {
 		type: 'object',
 		properties: {
@@ -53,6 +56,12 @@ const SUBMIT_TURN_TOOL = {
 						counterType: {
 							type: 'string',
 							description: 'adjustCounter only: counter type, e.g. "+1/+1", "loyalty", "poison".'
+						},
+						attackerNames: {
+							type: 'array',
+							items: { type: 'string' },
+							description: 'declareAttackers only: exact names of your own untapped, non-summoning-sick ' +
+								'(or hasty) creatures to attack with this turn. Omit or leave empty to attack with nothing.'
 						}
 					},
 					required: ['type']
@@ -65,26 +74,35 @@ const SUBMIT_TURN_TOOL = {
 
 const SYSTEM_PROMPT =
 	'You are playing one seat in a simplified, informal Commander (EDH) Magic: The Gathering ' +
-	'playtest simulator. This is not a rules-enforced engine: there is no stack, no priority ' +
-	'passing, no mana pool tracking, and combat damage isn\'t auto-resolved — represent the outcome ' +
-	'of any spell, attack, or ability yourself via the actions available (moveCard/adjustLife/' +
-	'adjustCounter/addCard/removeCard). Use good judgement to play a sensible, reasonably strong ' +
-	'turn given your hand, board, and mana available (lands + other mana sources on your ' +
-	'battlefield, tapped for cost). Only ever act on your own seat — never move or modify another ' +
-	'seat\'s cards or life total. Always respond by calling the submit_turn tool exactly once. If ' +
-	'there is nothing productive to do, a single passTurn action is a completely valid turn.';
+	'playtest simulator. This is not a fully rules-enforced engine: there is no stack and no ' +
+	'priority passing, and casting a spell or activating an ability still just applies its effect ' +
+	'directly via the actions available (moveCard/adjustLife/adjustCounter/addCard/removeCard). ' +
+	'Combat is the one part of the game that IS structured: use declareAttackers to attack with ' +
+	'your untapped, non-summoning-sick (or hasty) creatures — the engine automatically figures out ' +
+	'blocks (from your opponent, or from this same engine on their behalf) and resolves damage, ' +
+	'deaths, and life loss for you. You never need to manually adjust life or move cards to the ' +
+	'graveyard for combat. A card tagged [power/toughness] in the board summary is a creature; ' +
+	'[sick] means it has summoning sickness and can\'t attack unless it has haste; [tapped] means ' +
+	'it can\'t attack or be tapped for anything else this turn. Use good judgement to play a ' +
+	'sensible, reasonably strong turn given your hand, board, and mana available (lands + other ' +
+	'mana sources on your battlefield, tapped for cost). Only ever act on your own seat — never ' +
+	'move or modify another seat\'s cards or life total. Always respond by calling the submit_turn ' +
+	'tool exactly once. If there is nothing productive to do, a single passTurn action is a ' +
+	'completely valid turn.';
 
 function describeCard(cardInfo: GameState['cardInfo'], card: Card, detailed: boolean): string {
 	const info = cardInfo[card.name.toLowerCase()];
 	const tapped = card.tapped ? ' [tapped]' : '';
+	const sick = card.summoningSick ? ' [sick]' : '';
+	const pt = info?.power != null && info?.toughness != null ? ` [${info.power}/${info.toughness}]` : '';
 	const counters = card.counters && Object.keys(card.counters).length
 		? ' {' + Object.entries(card.counters).map(([k, v]) => `${k}:${v}`).join(', ') + '}'
 		: '';
-	if (!detailed) return `${card.name}${tapped}${counters}`;
+	if (!detailed) return `${card.name}${pt}${tapped}${sick}${counters}`;
 	const cost = info?.manaCost ? ` ${info.manaCost}` : '';
 	const type = info?.typeLine ? ` — ${info.typeLine}` : '';
 	const text = info?.oracleText ? ` :: ${info.oracleText.replace(/\n/g, ' ')}` : '';
-	return `${card.name}${cost}${type}${tapped}${counters}${text}`;
+	return `${card.name}${cost}${type}${pt}${tapped}${sick}${counters}${text}`;
 }
 
 // Everyone's battlefield/graveyard/exile is genuinely public information in Magic, so those are
@@ -120,10 +138,11 @@ export function summarizeGameState(game: GameState, seatId: PlayerKey): string {
 	return lines.join('\n');
 }
 
-// Throws on any failure (network error, non-2xx, missing/malformed tool call) — the caller
-// (GameRoom.alarm()) is what decides how to react to a failure, this never returns a half-parsed
-// result for applyAction to choke on unpredictably.
-export async function requestAiTurn(game: GameState, seatId: PlayerKey, env: Env): Promise<any[]> {
+// Shared plumbing for every Anthropic call in this file: forces structured output via a single
+// named tool (tool_choice), throws on any failure (network error, non-2xx, missing/malformed tool
+// call) rather than returning something half-parsed for the caller to choke on unpredictably, and
+// returns just the validated `input` object of the forced tool call.
+async function callAnthropicTool(system: string, userContent: string, tool: { name: string; [k: string]: unknown }, env: Env): Promise<any> {
 	const model = env.ANTHROPIC_MODEL || DEFAULT_MODEL;
 
 	const res = await fetch(ANTHROPIC_API_URL, {
@@ -136,10 +155,10 @@ export async function requestAiTurn(game: GameState, seatId: PlayerKey, env: Env
 		body: JSON.stringify({
 			model,
 			max_tokens: MAX_TOKENS,
-			system: SYSTEM_PROMPT,
-			messages: [{ role: 'user', content: summarizeGameState(game, seatId) }],
-			tools: [SUBMIT_TURN_TOOL],
-			tool_choice: { type: 'tool', name: 'submit_turn' }
+			system,
+			messages: [{ role: 'user', content: userContent }],
+			tools: [tool],
+			tool_choice: { type: 'tool', name: tool.name }
 		})
 	});
 
@@ -149,14 +168,127 @@ export async function requestAiTurn(game: GameState, seatId: PlayerKey, env: Env
 	}
 
 	const data: any = await res.json();
-	const toolUse = (data.content ?? []).find((block: any) => block.type === 'tool_use' && block.name === 'submit_turn');
-	if (!toolUse || !Array.isArray(toolUse.input?.actions)) {
-		throw new Error('Anthropic response did not include a valid submit_turn tool call');
+	const toolUse = (data.content ?? []).find((block: any) => block.type === 'tool_use' && block.name === tool.name);
+	if (!toolUse) {
+		throw new Error(`Anthropic response did not include a valid ${tool.name} tool call`);
 	}
+	return toolUse.input;
+}
 
+export async function requestAiTurn(game: GameState, seatId: PlayerKey, env: Env): Promise<any[]> {
+	const input = await callAnthropicTool(SYSTEM_PROMPT, summarizeGameState(game, seatId), SUBMIT_TURN_TOOL, env);
+	if (!Array.isArray(input?.actions)) {
+		throw new Error('Anthropic response did not include a valid actions array');
+	}
 	// Never trust the model to have followed the "only act on your own seat" instruction — rewrite
 	// `player` on every action to the seat that's actually allowed to act here, the same defensive
 	// fix already applied to the human-facing MCP tools after the "AI played my cards" bug earlier
 	// this project.
-	return toolUse.input.actions.map((action: any) => ({ ...action, player: seatId }));
+	return input.actions.map((action: any) => ({ ...action, player: seatId }));
+}
+
+const DECLARE_BLOCKS_TOOL = {
+	name: 'declare_blocks',
+	description:
+		'Declare your blocks against the current attackers, or none at all. For each attacker you ' +
+		"choose to block, list its exact name and the exact name(s) of your creature(s) blocking it " +
+		"(multiple blockers on one attacker are allowed). Leave 'blocks' empty to take all the damage.",
+	input_schema: {
+		type: 'object',
+		properties: {
+			blocks: {
+				type: 'array',
+				description: 'One entry per attacker you are choosing to block.',
+				items: {
+					type: 'object',
+					properties: {
+						attackerName: { type: 'string', description: "Exact name of the attacking creature you're blocking." },
+						blockerNames: { type: 'array', items: { type: 'string' }, description: 'Exact name(s) of your creature(s) assigned to block it.' }
+					},
+					required: ['attackerName', 'blockerNames']
+				}
+			}
+		},
+		required: ['blocks']
+	}
+};
+
+// Focused, single-decision call — much cheaper/faster than a full requestAiTurn, and used both for
+// an AI defender responding to a human's or another AI's attack. Resolves names to ids directly
+// against the live GameState (this file has no access to GameRoom's private id-resolution
+// helpers); any assignment referencing an unknown or already-used name is silently dropped rather
+// than thrown, matching the existing "collect errors, don't abort" philosophy used for batches.
+export async function requestAiBlocks(game: GameState, seatId: PlayerKey, env: Env): Promise<Record<string, string[]>> {
+	const combat = game.combat!;
+	const attackerBattlefield = game.players[combat.attackerSeat].battlefield;
+	const attackerLines = combat.attackers.map((id) => {
+		const card = attackerBattlefield.find((c) => c.id === id);
+		return card ? `- ${describeCard(game.cardInfo, card, true)}` : null;
+	}).filter(Boolean).join('\n');
+
+	const userContent =
+		summarizeGameState(game, seatId) +
+		`\n\nYou are being attacked. Attackers:\n${attackerLines}\n\n` +
+		'Declare your blocks (or none) by calling declare_blocks.';
+
+	const input = await callAnthropicTool(SYSTEM_PROMPT, userContent, DECLARE_BLOCKS_TOOL, env);
+	const blockerBattlefield = game.players[seatId].battlefield;
+	const usedBlockerIds = new Set<string>();
+	const blocks: Record<string, string[]> = {};
+
+	for (const entry of input?.blocks ?? []) {
+		const attackerCard = attackerBattlefield.find((c) => c.name.toLowerCase() === (entry?.attackerName ?? '').toLowerCase());
+		if (!attackerCard || !combat.attackers.includes(attackerCard.id)) continue;
+		const blockerIds: string[] = [];
+		for (const name of entry?.blockerNames ?? []) {
+			const blockerCard = blockerBattlefield.find(
+				(c) => c.name.toLowerCase() === (name ?? '').toLowerCase() && !usedBlockerIds.has(c.id)
+			);
+			if (!blockerCard) continue;
+			usedBlockerIds.add(blockerCard.id);
+			blockerIds.push(blockerCard.id);
+		}
+		if (blockerIds.length) blocks[attackerCard.id] = blockerIds;
+	}
+	return blocks;
+}
+
+// Another focused call, for an AI seat that's over the hand-size limit at end of turn. The tool
+// schema is built fresh per call with minItems/maxItems pinned to the exact required count, rather
+// than a shared constant — this is the one tool in this file whose shape genuinely depends on the
+// call's own arguments.
+export async function requestAiDiscard(game: GameState, seatId: PlayerKey, count: number, env: Env): Promise<string[]> {
+	const tool = {
+		name: 'declare_discard',
+		description: `Choose exactly ${count} card(s) from your hand to discard.`,
+		input_schema: {
+			type: 'object',
+			properties: {
+				cardNames: {
+					type: 'array',
+					items: { type: 'string' },
+					minItems: count,
+					maxItems: count,
+					description: `Exact names of ${count} card(s) in your hand to discard.`
+				}
+			},
+			required: ['cardNames']
+		}
+	};
+	const userContent = summarizeGameState(game, seatId) + `\n\nYour hand is over the limit — choose ${count} card(s) to discard.`;
+	const input = await callAnthropicTool(SYSTEM_PROMPT, userContent, tool, env);
+
+	const hand = [...game.players[seatId].hand];
+	const chosenIds: string[] = [];
+	for (const name of input?.cardNames ?? []) {
+		const idx = hand.findIndex((c) => c.name.toLowerCase() === (name ?? '').toLowerCase());
+		if (idx === -1) continue;
+		chosenIds.push(hand[idx].id);
+		hand.splice(idx, 1); // don't let one repeated name consume the same card twice
+	}
+	// Pad or truncate deterministically so the caller always gets exactly `count` valid ids, even
+	// if the model's answer didn't fully resolve — same "never half-fail the caller" philosophy as
+	// requestAiTurn's error handling.
+	while (chosenIds.length < count && hand.length) chosenIds.push(hand.pop()!.id);
+	return chosenIds.slice(0, count);
 }

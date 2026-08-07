@@ -8,6 +8,10 @@ export interface Card {
 	// Arbitrary counter types ("+1/+1", "loyalty", "poison", whatever) -> count. Absent/zero
 	// entries are cleaned up rather than kept at 0, so "has counters" is just "object has keys".
 	counters?: Record<string, number>;
+	// True while this permanent hasn't been continuously controlled since its controller's most
+	// recent untap step — set on any entry to the battlefield, cleared there. Ignored by creatures
+	// with haste (see game-room.ts's hasKeyword()).
+	summoningSick?: boolean;
 }
 
 export type ZoneName = 'command' | 'library' | 'hand' | 'battlefield' | 'graveyard' | 'exile';
@@ -60,6 +64,19 @@ export interface GameState {
 	// failures (e.g. a bad key) instead of retrying forever.
 	aiMoveCount?: number;
 	aiConsecutiveFailures?: number;
+	// Presence/absence of these two IS the state — no separate phase enum. Both are transient/
+	// interstitial: set when a decision is pending, cleared the instant it's resolved.
+	combat?: CombatState;
+	pendingDiscard?: { player: PlayerKey; count: number };
+}
+
+// Combat assumes exactly 2 seats (the client UI only ever renders 2 seats regardless of room
+// size) — attackerSeat is always game.active at the moment attackers are declared; defenderSeat is
+// simply "the other seat." No per-attacker target since there's only ever one possible defender.
+export interface CombatState {
+	attackerSeat: PlayerKey;
+	defenderSeat: PlayerKey;
+	attackers: string[]; // Card ids, from attackerSeat's battlefield
 }
 
 export interface DeckEntry {
@@ -76,4 +93,9 @@ export interface CardInfoEntry {
 	typeLine: string;
 	manaCost: string;
 	oracleText: string;
+	// Raw Scryfall strings, not pre-parsed — some creatures print "*" or similar for
+	// characteristic-defining power/toughness. Parsing/caveat-handling happens at the point of use
+	// (game-room.ts's ptNumber()), not here. null for non-creatures or cards with no P/T.
+	power: string | null;
+	toughness: string | null;
 }

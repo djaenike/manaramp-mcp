@@ -94,7 +94,9 @@ export async function resolveCardInfo(names: string[]): Promise<ResolveResult> {
 				image: cardImage(card),
 				typeLine: card.type_line ?? '',
 				manaCost: card.mana_cost ?? '',
-				oracleText: card.oracle_text ?? (card.card_faces?.map((f: any) => f.oracle_text).join(' // ') ?? '')
+				oracleText: card.oracle_text ?? (card.card_faces?.map((f: any) => f.oracle_text).join(' // ') ?? ''),
+				power: card.power ?? card.card_faces?.[0]?.power ?? null,
+				toughness: card.toughness ?? card.card_faces?.[0]?.toughness ?? null
 			};
 		}
 		for (const nf of data.not_found ?? []) {

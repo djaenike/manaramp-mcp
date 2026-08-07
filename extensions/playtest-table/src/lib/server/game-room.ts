@@ -1,6 +1,6 @@
-import type { Card, DeckEntry, GameState, PlayerKey, PlayerState, SeatDef, ZoneName } from './types';
+import type { Card, CardInfoEntry, CombatState, DeckEntry, GameState, PlayerKey, PlayerState, SeatDef, ZoneName } from './types';
 import { RANDOM_COMMANDERS, fetchEdhrecAverageDeck, resolveCardInfo } from './deck-resolve';
-import { requestAiTurn } from './ai-turn';
+import { requestAiTurn, requestAiBlocks, requestAiDiscard } from './ai-turn';
 
 const ALL_ZONES: ZoneName[] = ['command', 'library', 'hand', 'battlefield', 'graveyard', 'exile'];
 
@@ -52,6 +52,23 @@ function shuffle<T>(arr: T[]): void {
 		const j = Math.floor(Math.random() * (i + 1));
 		[arr[i], arr[j]] = [arr[j], arr[i]];
 	}
+}
+
+// --- Combat helpers ------------------------------------------------------------------------
+// Simple oracle-text substring checks, not real keyword parsing — reused for haste (summoning
+// sickness override), flying/reach (block legality), and "no maximum hand size" (discard
+// exemption). Deliberately doesn't model vigilance/trample/deathtouch/first-strike/menace — see
+// the plan's explicit scope exclusions.
+function hasKeyword(info: CardInfoEntry | undefined, phrase: string): boolean {
+	return (info?.oracleText ?? '').toLowerCase().includes(phrase.toLowerCase());
+}
+
+// Scryfall's power/toughness are raw strings — "*" and similar characteristic-defining values
+// aren't numeric. Treated as 0 rather than crashing; this is a documented simplification, not a
+// full characteristic-defining-ability simulation.
+function ptNumber(raw: string | null | undefined): number {
+	const n = Number(raw);
+	return Number.isFinite(n) ? n : 0;
 }
 
 // One room = one Durable Object = one authoritative GameState. Every connected client (you
@@ -123,10 +140,26 @@ export class GameRoom {
 
 	// Reactive per-room scheduling (a Durable Object Alarm), not a global cron sweep — fires once,
 	// ~1.5s after whatever just made this seat active, giving the just-saved state a moment to
-	// broadcast first and keeping AI-vs-AI spectator play watchable instead of instant.
+	// broadcast first and keeping AI-vs-AI spectator play watchable instead of instant. Unwatched
+	// rooms don't need a separate check here — webSocketClose() terminates the whole room outright
+	// the moment the last connection drops, which cancels any pending alarm right along with it.
+	//
+	// Three trigger conditions now, checked in priority order: a pending block decision for an AI
+	// defender, a pending discard for an AI seat, or (only when neither is pending) the normal
+	// active-seat-is-AI case. combat/pendingDiscard can belong to a seat OTHER than game.active —
+	// e.g. an AI's attack waiting on a human's block decision, or vice versa — so this can't just
+	// check game.active alone anymore.
 	private maybeScheduleAiTurn() {
-		const seat = this.game?.seats.find((s) => s.id === this.game?.active);
-		if (seat?.controller === 'ai') this.ctx.storage.setAlarm(Date.now() + 1500);
+		const game = this.game;
+		if (!game) return;
+		const blockSeat = game.combat && game.seats.find((s) => s.id === game.combat!.defenderSeat);
+		const discardSeat = game.pendingDiscard && game.seats.find((s) => s.id === game.pendingDiscard!.player);
+		const activeSeat = game.seats.find((s) => s.id === game.active);
+		const needsAlarm =
+			blockSeat?.controller === 'ai' ||
+			discardSeat?.controller === 'ai' ||
+			(!game.combat && !game.pendingDiscard && activeSeat?.controller === 'ai');
+		if (needsAlarm) this.ctx.storage.setAlarm(Date.now() + 1500);
 	}
 
 	// Cloudflare calls this automatically when a scheduled alarm fires. This is what makes an AI
@@ -135,6 +168,60 @@ export class GameRoom {
 	async alarm() {
 		await this.loadGame();
 		const game = this.game!;
+
+		// Pending combat/discard decisions can belong to a seat OTHER than game.active — checked
+		// first, ahead of the normal "take a whole turn" branch below. Both use a DETERMINISTIC
+		// fallback after 3 failures (rather than halting like the normal branch does) because,
+		// unlike a stuck active turn where a human on some seat can always manually pass, a stuck
+		// AI defender/discarder has no human able to unstick it — the room would sit there with
+		// sockets connected but nothing ever resolving otherwise.
+		if (game.combat) {
+			const defSeat = game.seats.find((s) => s.id === game.combat!.defenderSeat);
+			if (defSeat?.controller !== 'ai') return; // waiting on a human defender — nothing to do
+			try {
+				const blocks = await requestAiBlocks(game, defSeat.id, this.env);
+				this.applyAction({ type: 'declareBlockers', player: defSeat.id, blocks });
+				game.aiConsecutiveFailures = 0;
+			} catch (e) {
+				game.aiConsecutiveFailures = (game.aiConsecutiveFailures ?? 0) + 1;
+				const errMsg = e instanceof Error ? e.message : String(e);
+				this.addLog('system', `AI block decision failed (${game.aiConsecutiveFailures}/3): ${errMsg}`);
+				if (game.aiConsecutiveFailures >= 3) {
+					this.addLog('system', 'Defaulting to "no blocks" after repeated failures so combat is never stuck.');
+					this.applyAction({ type: 'declareBlockers', player: defSeat.id, blocks: {} });
+				}
+			}
+			await this.saveGame();
+			this.broadcast();
+			this.maybeScheduleAiTurn();
+			return;
+		}
+
+		if (game.pendingDiscard) {
+			const discardSeatId = game.pendingDiscard.player;
+			const seat = game.seats.find((s) => s.id === discardSeatId);
+			if (seat?.controller !== 'ai') return; // waiting on a human — nothing to do
+			try {
+				const cardIds = await requestAiDiscard(game, discardSeatId, game.pendingDiscard.count, this.env);
+				this.discard(discardSeatId, cardIds);
+				game.aiConsecutiveFailures = 0;
+			} catch (e) {
+				game.aiConsecutiveFailures = (game.aiConsecutiveFailures ?? 0) + 1;
+				const errMsg = e instanceof Error ? e.message : String(e);
+				this.addLog('system', `AI discard failed (${game.aiConsecutiveFailures}/3): ${errMsg}`);
+				if (game.aiConsecutiveFailures >= 3) {
+					const p = this.player(discardSeatId);
+					const fallback = p.hand.slice(-((this.game!.pendingDiscard?.count) ?? 0)).map((c) => c.id);
+					this.addLog('system', 'Defaulting to an automatic discard after repeated failures.');
+					this.discard(discardSeatId, fallback);
+				}
+			}
+			await this.saveGame();
+			this.broadcast();
+			this.maybeScheduleAiTurn();
+			return;
+		}
+
 		const seat = game.seats.find((s) => s.id === game.active);
 		if (!seat || seat.controller !== 'ai') return; // stale/superseded alarm — nothing to do
 
@@ -149,9 +236,10 @@ export class GameRoom {
 			game.aiMoveCount = (game.aiMoveCount ?? 0) + 1;
 			game.aiConsecutiveFailures = 0;
 			this.applyAction({ type: 'batch', actions });
-			// Safety net: if the model's batch didn't end with passTurn, force it so the room can
-			// never stall waiting on a move that already happened.
-			if (game.active === seat.id) this.passTurn();
+			// Safety net: if the model's batch didn't end with passTurn (or ended mid-combat/discard,
+			// which passTurn() itself now refuses), force it so the room can never stall waiting on a
+			// move that already happened.
+			if (game.active === seat.id && !game.combat && !game.pendingDiscard) this.passTurn();
 		} catch (e) {
 			game.aiConsecutiveFailures = (game.aiConsecutiveFailures ?? 0) + 1;
 			const errMsg = e instanceof Error ? e.message : String(e);
@@ -287,10 +375,13 @@ export class GameRoom {
 		this.broadcast();
 	}
 
-	// Explicit and deliberate, not tied to anyone navigating away or closing a tab — a real PvP
-	// game shouldn't die just because one player hit "back" for a second. Wipes persisted storage
-	// and removes the room from the lobby list so it can't be rejoined or resurrected, then tells
-	// every connected client (both players, any spectator) to leave.
+	// Wipes persisted storage and removes the room from the lobby list so it can't be rejoined or
+	// resurrected, then tells every connected client (both players, any spectator) to leave. Called
+	// both explicitly (a player clicking "End table") and automatically by webSocketClose() the
+	// moment a room's last connection drops — deliberately no grace period or "paused, resumable"
+	// state: this is just simulated trial deck play, not a tracked real game, so losing an
+	// in-progress board to a dropped connection is an acceptable, low-stakes tradeoff for the
+	// alternative (an unwatched AI-vs-AI room quietly spending Anthropic API credits forever).
 	async endTable() {
 		const roomId = this.ctx.id.name;
 		if (roomId && this.env?.LOBBY) {
@@ -311,8 +402,24 @@ export class GameRoom {
 	}
 
 	async webSocketClose(ws: WebSocket, code: number, reason: string) {
-		console.log(`[room] disconnect — now ${this.ctx.getWebSockets().length - 1} socket(s) (code=${code})`);
-		ws.close(code, reason);
+		// getWebSockets() still includes `ws` itself here (it hasn't fully closed yet) — hence the
+		// -1 both in the log and in the "was this the last one" check below.
+		const remaining = this.ctx.getWebSockets().length - 1;
+		console.log(`[room] disconnect — now ${remaining} socket(s) (code=${code})`);
+		try {
+			// 1005/1006 are reserved "no status was actually sent" codes — valid to *observe* here,
+			// but the WebSocket spec forbids passing them back to close() explicitly, which throws
+			// and (found live, testing this exact change) would otherwise skip the termination check
+			// below entirely.
+			ws.close(code === 1005 || code === 1006 ? undefined : code, reason);
+		} catch {
+			// already closed, or the browser sent a code we can't legally echo back — either way,
+			// nothing left to do with this socket.
+		}
+		if (remaining <= 0 && this.game) {
+			console.log('[room] last connection dropped — terminating room to stop any further automatic AI play.');
+			await this.endTable();
+		}
 	}
 
 	async webSocketError(ws: WebSocket) {
@@ -391,6 +498,15 @@ export class GameRoom {
 			case 'resetTable':
 				this.game = freshState(this.game?.seats ?? DEFAULT_SEATS, this.game?.cardInfo ?? {});
 				return;
+			case 'declareAttackers': {
+				const cardIds: string[] = msg.cardIds ??
+					(msg.attackerNames ?? []).map((n: string) => this.findCardIdByName(msg.player, 'battlefield', n));
+				return this.declareAttackers(msg.player, cardIds);
+			}
+			case 'declareBlockers':
+				return this.declareBlockers(msg.player, msg.blocks ?? {});
+			case 'discard':
+				return this.discard(msg.player, msg.cardIds ?? []);
 			default:
 				throw new Error('unknown action: ' + msg.type);
 		}
@@ -422,6 +538,10 @@ export class GameRoom {
 		if (idx === -1) return;
 		const [card] = fromArr.splice(idx, 1);
 		card.tapped = false;
+		// Entering the battlefield (from any zone, including reanimation from the graveyard) always
+		// starts summoning-sick; leaving it clears the flag since it's meaningless anywhere else.
+		if (toZone === 'battlefield') card.summoningSick = true;
+		else delete card.summoningSick;
 		const toArr = this.zoneArr(player, toZone);
 		if (toZone === 'library') toArr.unshift(card);
 		else toArr.push(card);
@@ -477,7 +597,26 @@ export class GameRoom {
 		this.player(player).life += n;
 	}
 
+	// Gating wrapper around advanceTurn(): a real Magic turn can't end with combat unresolved or a
+	// hand over the limit, so this refuses to advance until both are clear, instead diverting into
+	// a pendingDiscard wait if hand size demands it. The active player themselves is who's being
+	// checked here — "at THEIR end of turn," before any seat-index advancement happens.
 	passTurn() {
+		const game = this.game!;
+		if (game.combat) throw new Error('resolve the pending combat before passing the turn');
+		if (game.pendingDiscard) throw new Error('resolve the pending discard before passing the turn');
+
+		const p = this.player(game.active);
+		if (p.hand.length > 7 && !this.hasUnlimitedHandSize(game.active)) {
+			game.pendingDiscard = { player: game.active, count: p.hand.length - 7 };
+			this.addLog(game.active, `${p.label} has ${p.hand.length} cards and must discard down to 7.`);
+			this.maybeScheduleAiTurn();
+			return;
+		}
+		this.advanceTurn();
+	}
+
+	private advanceTurn() {
 		const game = this.game!;
 		// seats[] is turn order — cycling its index generalizes the old you/ai binary toggle to any
 		// number of seats. Wrapping back to the first seat is what starting a new turn means.
@@ -489,8 +628,13 @@ export class GameRoom {
 		game.active = next;
 		// Real Magic has an automatic untap step — without this, a tapped permanent stays tapped
 		// forever until someone remembers to toggle it back, and re-tapping it for "this turn's
-		// mana" on an already-tapped land silently untaps it instead (a toggle, not a set).
-		for (const card of this.player(next).battlefield) card.tapped = false;
+		// mana" on an already-tapped land silently untaps it instead (a toggle, not a set). Also
+		// clears summoning sickness — a permanent that's been under its controller since their last
+		// untap step is no longer sick.
+		for (const card of this.player(next).battlefield) {
+			card.tapped = false;
+			delete card.summoningSick;
+		}
 		this.addLog('system', `Turn passed — ${nextSeat.label}'s turn (turn ${game.turn})`);
 
 		// Real Magic also has an automatic draw step, with the standard exception that whoever
@@ -506,6 +650,170 @@ export class GameRoom {
 			this.addLog(next, `${p.label} drew ${card.name} for the turn.`);
 		}
 
+		this.maybeScheduleAiTurn();
+	}
+
+	private hasUnlimitedHandSize(player: PlayerKey): boolean {
+		return this.zoneArr(player, 'battlefield').some((c) =>
+			hasKeyword(this.game!.cardInfo[c.name.toLowerCase()], 'no maximum hand size'));
+	}
+
+	discard(player: PlayerKey, cardIds: string[]) {
+		const game = this.game!;
+		if (!game.pendingDiscard || game.pendingDiscard.player !== player) {
+			throw new Error('no pending discard for this seat');
+		}
+		if (cardIds.length !== game.pendingDiscard.count) {
+			throw new Error(`must discard exactly ${game.pendingDiscard.count} card(s)`);
+		}
+		for (const id of cardIds) this.moveCard(player, id, 'hand', 'graveyard');
+		game.pendingDiscard = undefined;
+		this.advanceTurn();
+	}
+
+	// --- combat ----------------------------------------------------------------------------
+
+	private canBlock(attackerInfo: CardInfoEntry | undefined, blockerInfo: CardInfoEntry | undefined): boolean {
+		if (!hasKeyword(attackerInfo, 'flying')) return true;
+		return hasKeyword(blockerInfo, 'flying') || hasKeyword(blockerInfo, 'reach');
+	}
+
+	declareAttackers(player: PlayerKey, cardIds: string[]) {
+		const game = this.game!;
+		if (game.seats.length !== 2) throw new Error('combat only supports exactly 2 seats');
+		if (game.combat) throw new Error('combat is already in progress');
+		if (player !== game.active) throw new Error('only the active player can declare attackers');
+		const defenderSeat = game.seats.find((s) => s.id !== player)!.id;
+
+		// Validate every card BEFORE tapping any of them — an all-or-nothing declaration. Tapping
+		// as-you-go in a single pass would leave earlier cards tapped-but-uncommitted if a later
+		// card in the same list fails validation and throws.
+		const battlefield = this.zoneArr(player, 'battlefield');
+		const cards: Card[] = [];
+		for (const id of cardIds) {
+			const card = battlefield.find((c) => c.id === id);
+			if (!card) throw new Error(`no card ${id} on ${player}'s battlefield`);
+			const info = game.cardInfo[card.name.toLowerCase()];
+			if (!(info?.typeLine ?? '').includes('Creature')) throw new Error(`${card.name} is not a creature`);
+			if (card.tapped) throw new Error(`${card.name} is already tapped`);
+			if (card.summoningSick && !hasKeyword(info, 'haste')) {
+				throw new Error(`${card.name} has summoning sickness`);
+			}
+			cards.push(card);
+		}
+		for (const card of cards) card.tapped = true;
+		this.addLog(player, cardIds.length
+			? `${this.player(player).label} attacks with ${cardIds.map((id) => battlefield.find((c) => c.id === id)!.name).join(', ')}.`
+			: `${this.player(player).label} declares no attackers.`);
+
+		if (!cardIds.length) return; // nothing to resolve — no combat state needed at all
+
+		game.combat = { attackerSeat: player, defenderSeat, attackers: cardIds };
+
+		// Auto-skip the declare-blockers step entirely if no attacker/blocker pairing could ever be
+		// legal — avoids a pointless UI prompt or AI call when there's no real decision to make.
+		const defenderBattlefield = this.zoneArr(defenderSeat, 'battlefield');
+		const anyLegalBlock = cardIds.some((attackerId) => {
+			const attackerInfo = game.cardInfo[battlefield.find((c) => c.id === attackerId)!.name.toLowerCase()];
+			return defenderBattlefield.some((blocker) => {
+				if (blocker.tapped) return false;
+				const blockerInfo = game.cardInfo[blocker.name.toLowerCase()];
+				if (!(blockerInfo?.typeLine ?? '').includes('Creature')) return false;
+				return this.canBlock(attackerInfo, blockerInfo);
+			});
+		});
+
+		if (!anyLegalBlock) {
+			this.resolveCombat({});
+		} else {
+			this.maybeScheduleAiTurn(); // covers an AI defender
+		}
+	}
+
+	declareBlockers(player: PlayerKey, blocks: Record<string, string[]>) {
+		const game = this.game!;
+		if (!game.combat) throw new Error('no combat is in progress');
+		if (player !== game.combat.defenderSeat) throw new Error('only the defending player can declare blockers');
+
+		const defenderBattlefield = this.zoneArr(player, 'battlefield');
+		const attackerBattlefield = this.zoneArr(game.combat.attackerSeat, 'battlefield');
+		const usedBlockers = new Set<string>();
+		for (const [attackerId, blockerIds] of Object.entries(blocks)) {
+			if (!game.combat.attackers.includes(attackerId)) throw new Error(`${attackerId} is not a declared attacker`);
+			const attackerCard = attackerBattlefield.find((c) => c.id === attackerId);
+			const attackerInfo = attackerCard ? game.cardInfo[attackerCard.name.toLowerCase()] : undefined;
+			for (const blockerId of blockerIds) {
+				if (usedBlockers.has(blockerId)) throw new Error(`${blockerId} is already blocking another attacker`);
+				const blockerCard = defenderBattlefield.find((c) => c.id === blockerId);
+				if (!blockerCard) throw new Error(`no card ${blockerId} on ${player}'s battlefield`);
+				const blockerInfo = game.cardInfo[blockerCard.name.toLowerCase()];
+				if (!(blockerInfo?.typeLine ?? '').includes('Creature')) throw new Error(`${blockerCard.name} is not a creature`);
+				if (blockerCard.tapped) throw new Error(`${blockerCard.name} is tapped and can't block`);
+				if (!this.canBlock(attackerInfo, blockerInfo)) throw new Error(`${blockerCard.name} can't block ${attackerCard?.name}`);
+				usedBlockers.add(blockerId);
+			}
+		}
+		this.resolveCombat(blocks);
+	}
+
+	private counterBonus(card: Card, type: '+1/+1' | '-1/-1'): number {
+		const plus = card.counters?.['+1/+1'] ?? 0;
+		const minus = card.counters?.['-1/-1'] ?? 0;
+		return type === '+1/+1' ? plus - minus : 0;
+	}
+
+	// Resolves combat damage synchronously and unconditionally clears game.combat — no separate
+	// "damage step" wait state. Deliberately simplified: no trample/deathtouch/first strike, and a
+	// multiply-blocked attacker deals its full power to only the FIRST blocker in its array (real
+	// attacker-chosen damage-assignment order isn't modeled).
+	private resolveCombat(blocks: Record<string, string[]>) {
+		const game = this.game!;
+		const combat = game.combat!;
+		const attackerSeat = combat.attackerSeat;
+		const defenderSeat = combat.defenderSeat;
+		const attackerBattlefield = this.zoneArr(attackerSeat, 'battlefield');
+		const defenderBattlefield = this.zoneArr(defenderSeat, 'battlefield');
+		const defenderPlayer = this.player(defenderSeat);
+
+		for (const attackerId of combat.attackers) {
+			const attackerCard = attackerBattlefield.find((c) => c.id === attackerId);
+			if (!attackerCard) continue; // vanished mid-combat (bounced/killed by something else) — no-op
+			const attackerInfo = game.cardInfo[attackerCard.name.toLowerCase()];
+			const attackerPower = ptNumber(attackerInfo?.power) + this.counterBonus(attackerCard, '+1/+1');
+
+			const blockerIds = blocks[attackerId] ?? [];
+			const blockerCards = blockerIds.map((id) => defenderBattlefield.find((c) => c.id === id)).filter((c): c is Card => !!c);
+
+			if (!blockerCards.length) {
+				defenderPlayer.life -= attackerPower;
+				this.addLog('system', `${attackerCard.name} deals ${attackerPower} damage to ${defenderPlayer.label} (unblocked).`);
+				continue;
+			}
+
+			let totalBlockerPower = 0;
+			for (const blocker of blockerCards) {
+				const blockerInfo = game.cardInfo[blocker.name.toLowerCase()];
+				totalBlockerPower += ptNumber(blockerInfo?.power) + this.counterBonus(blocker, '+1/+1');
+			}
+			const attackerToughness = ptNumber(attackerInfo?.toughness) + this.counterBonus(attackerCard, '+1/+1');
+			this.addLog('system', `${attackerCard.name} is blocked by ${blockerCards.map((b) => b.name).join(', ')}.`);
+			if (totalBlockerPower >= attackerToughness) {
+				this.moveCard(attackerSeat, attackerCard.id, 'battlefield', 'graveyard');
+			}
+
+			// Simplification: the attacker's full power is dealt only to the first blocker.
+			const primaryBlocker = blockerCards[0];
+			const primaryInfo = game.cardInfo[primaryBlocker.name.toLowerCase()];
+			const primaryToughness = ptNumber(primaryInfo?.toughness) + this.counterBonus(primaryBlocker, '+1/+1');
+			if (attackerPower >= primaryToughness) {
+				this.moveCard(defenderSeat, primaryBlocker.id, 'battlefield', 'graveyard');
+			}
+		}
+
+		game.combat = undefined;
+		// Nothing else re-triggers scheduling for this seat once combat clears: a human resolving
+		// blocks against an AI attacker has no other caller that would notice the original (still
+		// active) AI attacker now needs to continue its post-combat main phase / pass its turn.
 		this.maybeScheduleAiTurn();
 	}
 
@@ -574,6 +882,7 @@ export class GameRoom {
 		if (!ALL_ZONES.includes(zone)) throw new Error('unknown zone: ' + zone);
 		Object.assign(this.game!.cardInfo, cardInfo);
 		const card: Card = { id: this.nextId(), name };
+		if (zone === 'battlefield') card.summoningSick = true;
 		this.zoneArr(player, zone).push(card);
 		this.addLog(player, `${name} added to ${zone}.`);
 	}
