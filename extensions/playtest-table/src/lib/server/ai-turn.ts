@@ -15,7 +15,8 @@ const MAX_TOKENS = 1536;
 // invoke (e.g. mulligan would reshuffle an established hand back into the library mid-game).
 const ACTION_TYPES = [
 	'moveCard', 'toggleTap', 'draw', 'shuffleLibrary',
-	'adjustLife', 'passTurn', 'addCard', 'removeCard', 'adjustCounter', 'declareAttackers'
+	'adjustLife', 'passTurn', 'addCard', 'removeCard', 'adjustCounter', 'declareAttackers',
+	'activateAbility'
 ];
 
 const SUBMIT_TURN_TOOL = {
@@ -24,13 +25,16 @@ const SUBMIT_TURN_TOOL = {
 		"Submit this seat's entire turn as an ordered list of actions, executed in order against the " +
 		'live board state. Use addCard (zone: "battlefield") to play a land/permanent from your hand ' +
 		'or create a token; moveCard to change a card\'s zone (e.g. hand -> battlefield, or -> graveyard ' +
-		'when it dies); toggleTap to tap/untap something for mana or an ability; adjustLife/adjustCounter ' +
-		'for damage, life swings, and +1/+1 or loyalty counters; draw for any extra card draw beyond the ' +
-		'automatic turn draw you already received; declareAttackers to attack (damage resolves ' +
-		'automatically once blocks are decided — you do not need to adjust life for combat yourself). ' +
-		'End the list with a passTurn action once your turn is complete so play moves to the next seat ' +
-		'— if you attacked and blocks are still pending, passTurn will simply fail harmlessly and be ' +
-		'retried automatically once combat resolves.',
+		'when it dies); toggleTap to tap/untap something for mana; activateAbility to tap a permanent ' +
+		'specifically for a non-mana ability (e.g. a "{T}: ..." effect) — this only taps it and logs ' +
+		'the activation distinctly, you still apply whatever the ability actually does yourself via ' +
+		'the other actions (adjustLife/addCard/adjustCounter/moveCard), same as resolving any spell; ' +
+		'adjustLife/adjustCounter for damage, life swings, and +1/+1 or loyalty counters; draw for any ' +
+		'extra card draw beyond the automatic turn draw you already received; declareAttackers to ' +
+		'attack (damage resolves automatically once blocks are decided — you do not need to adjust ' +
+		'life for combat yourself). End the list with a passTurn action once your turn is complete so ' +
+		'play moves to the next seat — if you attacked and blocks are still pending, passTurn will ' +
+		'simply fail harmlessly and be retried automatically once combat resolves.',
 	input_schema: {
 		type: 'object',
 		properties: {
@@ -43,7 +47,7 @@ const SUBMIT_TURN_TOOL = {
 						type: { type: 'string', enum: ACTION_TYPES },
 						cardName: {
 							type: 'string',
-							description: 'Exact existing card name — required by moveCard/toggleTap/removeCard/adjustCounter.'
+							description: 'Exact existing card name — required by moveCard/toggleTap/removeCard/adjustCounter/activateAbility.'
 						},
 						fromZone: { type: 'string', description: 'moveCard only: the zone the card is currently in.' },
 						toZone: { type: 'string', description: 'moveCard only: the zone to move it to.' },

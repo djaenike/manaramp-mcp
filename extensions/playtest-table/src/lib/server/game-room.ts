@@ -128,9 +128,15 @@ export class GameRoom {
 		}
 		this.game = freshState(seats, stored?.cardInfo ?? {});
 		// AI seats get a real deck (and an opening hand) immediately — "Me vs AI"/"AI vs AI" shouldn't
-		// start with an empty board waiting on someone to manually load one via chat/CLI first.
-		for (const seat of seats) {
-			if (seat.controller === 'ai') await this.autoLoadRandomDeck(seat.id);
+		// start with an empty board waiting on someone to manually load one via chat/CLI first. Human
+		// seats get the same treatment whenever an AI is at the table too — "Me vs AI" is meant to be
+		// playable the instant the room opens, not gated on a manual import step, and this is exactly
+		// what chat-driven table creation already felt like once playtest_load_deck loaded the human's
+		// requested deck right after playtest_create_table. A genuine human-vs-human table leaves every
+		// human seat empty, since real opponents bring their own decklist rather than a random one.
+		const hasAiSeat = seats.some((s) => s.controller === 'ai');
+		if (hasAiSeat) {
+			for (const seat of seats) await this.autoLoadRandomDeck(seat.id);
 		}
 		await this.saveGame();
 		// Covers the AI-vs-AI case: freshState() sets active to seats[0], which may already be
@@ -507,6 +513,10 @@ export class GameRoom {
 				return this.declareBlockers(msg.player, msg.blocks ?? {});
 			case 'discard':
 				return this.discard(msg.player, msg.cardIds ?? []);
+			case 'activateAbility': {
+				const cardId = msg.cardId ?? this.findCardIdByName(msg.player, 'battlefield', msg.cardName);
+				return this.activateAbility(msg.player, cardId);
+			}
 			default:
 				throw new Error('unknown action: ' + msg.type);
 		}
@@ -552,6 +562,18 @@ export class GameRoom {
 		const card = this.player(player).battlefield.find((c) => c.id === cardId);
 		if (!card) return;
 		card.tapped = !card.tapped;
+	}
+
+	// Deliberately just a tap + a distinctly-labeled log entry — same manual-resolution philosophy
+	// as everything else here (no ability cost/effect parsing, no oracle-text validation of what the
+	// ability actually is or costs). Apply whatever the ability actually does via the existing
+	// tools (adjustLife/addCard/adjustCounter/moveCard) same as resolving a spell already works.
+	activateAbility(player: PlayerKey, cardId: string) {
+		const card = this.player(player).battlefield.find((c) => c.id === cardId);
+		if (!card) throw new Error(`no card ${cardId} on ${player}'s battlefield`);
+		if (card.tapped) throw new Error(`${card.name} is already tapped`);
+		card.tapped = true;
+		this.addLog(player, `${card.name}'s ability activated (tapped).`);
 	}
 
 	draw(player: PlayerKey) {
@@ -674,6 +696,9 @@ export class GameRoom {
 	// --- combat ----------------------------------------------------------------------------
 
 	private canBlock(attackerInfo: CardInfoEntry | undefined, blockerInfo: CardInfoEntry | undefined): boolean {
+		// Only matches the literal, common phrasing — conditional unblockable ("...except by
+		// [condition]") isn't parsed, same bounded tradeoff as every other hasKeyword check here.
+		if (hasKeyword(attackerInfo, "can't be blocked")) return false;
 		if (!hasKeyword(attackerInfo, 'flying')) return true;
 		return hasKeyword(blockerInfo, 'flying') || hasKeyword(blockerInfo, 'reach');
 	}
@@ -701,7 +726,11 @@ export class GameRoom {
 			}
 			cards.push(card);
 		}
-		for (const card of cards) card.tapped = true;
+		// Vigilance means attacking doesn't tap the creature.
+		for (const card of cards) {
+			const info = game.cardInfo[card.name.toLowerCase()];
+			if (!hasKeyword(info, 'vigilance')) card.tapped = true;
+		}
 		this.addLog(player, cardIds.length
 			? `${this.player(player).label} attacks with ${cardIds.map((id) => battlefield.find((c) => c.id === id)!.name).join(', ')}.`
 			: `${this.player(player).label} declares no attackers.`);
@@ -763,9 +792,9 @@ export class GameRoom {
 	}
 
 	// Resolves combat damage synchronously and unconditionally clears game.combat — no separate
-	// "damage step" wait state. Deliberately simplified: no trample/deathtouch/first strike, and a
-	// multiply-blocked attacker deals its full power to only the FIRST blocker in its array (real
-	// attacker-chosen damage-assignment order isn't modeled).
+	// "damage step" wait state. Deliberately simplified: no deathtouch/first strike, and outside of
+	// the trample branch below, a multiply-blocked attacker deals its full power to only the FIRST
+	// blocker in its array (real attacker-chosen damage-assignment order isn't modeled).
 	private resolveCombat(blocks: Record<string, string[]>) {
 		const game = this.game!;
 		const combat = game.combat!;
@@ -799,6 +828,25 @@ export class GameRoom {
 			this.addLog('system', `${attackerCard.name} is blocked by ${blockerCards.map((b) => b.name).join(', ')}.`);
 			if (totalBlockerPower >= attackerToughness) {
 				this.moveCard(attackerSeat, attackerCard.id, 'battlefield', 'graveyard');
+			}
+
+			// Trample: if the attacker has enough power to kill every blocker outright, all of them
+			// die and the excess spills over to the defending player. If it DOESN'T have enough
+			// power to steamroll everyone, this deliberately falls back to the same single-blocker
+			// simplification as a non-trampler — modeling a real partial per-blocker lethal
+			// assignment order is out of scope, same "keep it simple" tradeoff as elsewhere here.
+			if (hasKeyword(attackerInfo, 'trample')) {
+				const totalBlockerToughness = blockerCards.reduce((sum, b) => {
+					const info = game.cardInfo[b.name.toLowerCase()];
+					return sum + ptNumber(info?.toughness) + this.counterBonus(b, '+1/+1');
+				}, 0);
+				const excess = attackerPower - totalBlockerToughness;
+				if (excess > 0) {
+					for (const blocker of blockerCards) this.moveCard(defenderSeat, blocker.id, 'battlefield', 'graveyard');
+					defenderPlayer.life -= excess;
+					this.addLog('system', `${attackerCard.name}'s trample damage (${excess}) spills over to ${defenderPlayer.label}.`);
+					continue;
+				}
 			}
 
 			// Simplification: the attacker's full power is dealt only to the first blocker.

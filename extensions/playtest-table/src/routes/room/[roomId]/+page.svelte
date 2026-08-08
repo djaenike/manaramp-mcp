@@ -6,6 +6,7 @@
 	// us most recently."
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
+	import { tick } from 'svelte';
 
 	type ZoneName = 'command' | 'library' | 'hand' | 'battlefield' | 'graveyard' | 'exile';
 	// An opaque seat id, not a closed 2-value union — the valid set for this room is whatever
@@ -127,6 +128,23 @@
 	// tokens mid-game, always onto your own battlefield.
 	let cardInput = $state('');
 
+	// "Search library" for a known card by exact name — finds it in your own library, moves it to
+	// hand, then shuffles, matching how a real tutor/search effect works. Reuses the existing
+	// moveCard/shuffleLibrary actions as a batch rather than needing any new server-side action.
+	let librarySearch = $state('');
+	function searchLibrary(player: PlayerKey) {
+		const name = librarySearch.trim();
+		if (!name) return;
+		send({
+			type: 'batch',
+			actions: [
+				{ type: 'moveCard', player, cardName: name, fromZone: 'library', toZone: 'hand' },
+				{ type: 'shuffleLibrary', player }
+			]
+		});
+		librarySearch = '';
+	}
+
 	let zoomCard: CardInfoEntry | null = $state(null);
 	let zoneMenu: { player: PlayerKey; zone: ZoneName; cardId: string; name: string; x: number; y: number } | null = $state(null);
 
@@ -165,9 +183,9 @@
 		return who === mySeatId ? 'who-mine' : 'who-theirs';
 	}
 
-	// Ordered so the battlefield reads the way a physical table does: lands along the bottom of
-	// each player's zone, then the things that actually attack/block, then support permanents.
-	const CATEGORY_ORDER = ['Land', 'Creature', 'Planeswalker', 'Enchantment', 'Artifact', 'Other'] as const;
+	// Creatures get top billing (what actually attacks/blocks), enchantments get their own
+	// dedicated spot above lands, and lands sit at the bottom — the order a physical table reads.
+	const CATEGORY_ORDER = ['Creature', 'Planeswalker', 'Artifact', 'Enchantment', 'Land', 'Other'] as const;
 
 	function categorize(name: string): (typeof CATEGORY_ORDER)[number] {
 		const typeLine = lookupCard(name)?.typeLine ?? '';
@@ -195,10 +213,24 @@
 	function hasKeyword(name: string, phrase: string): boolean {
 		return (lookupCard(name)?.oracleText ?? '').toLowerCase().includes(phrase.toLowerCase());
 	}
+	// Client-side mirror of game-room.ts's canBlock(), by card name — purely for dimming illegal
+	// options in the UI before you even try; the server independently re-validates everything.
+	function canBlockClient(attackerName: string, blockerName: string): boolean {
+		if (hasKeyword(attackerName, "can't be blocked")) return false;
+		if (!hasKeyword(attackerName, 'flying')) return true;
+		return hasKeyword(blockerName, 'flying') || hasKeyword(blockerName, 'reach');
+	}
 
 	let attackModeOn = $state(false);
 	let selectedAttackers = $state<Set<string>>(new Set());
-	let selectedAttackerForBlocking = $state<string | null>(null);
+	// The "armed" blocker, if any — Arena-style flow: click your own creature first (arms it),
+	// then click the attacker it's blocking (assigns it, clears the arm). Clicking an
+	// already-assigned creature un-assigns it immediately instead of arming it.
+	let selectedBlockerCardId = $state<string | null>(null);
+	let selectedBlockerName = $derived.by((): string | null => {
+		if (!selectedBlockerCardId || !game || !mySeatId) return null;
+		return game.players[mySeatId].battlefield.find((c) => c.id === selectedBlockerCardId)?.name ?? null;
+	});
 	let blockAssignments = $state<Record<string, string[]>>({});
 	let discardSelected = $state<Set<string>>(new Set());
 
@@ -230,31 +262,108 @@
 		selectedAttackers = new Set();
 	}
 
-	// Toggling always strips the card from every attacker's list first, then re-adds it to the
-	// currently-selected attacker only if it wasn't already assigned there — this makes "reassign a
-	// blocker to a different attacker" and "unassign" the same simple toggle gesture.
-	function toggleBlockerSelect(cardId: string) {
-		if (!selectedAttackerForBlocking) return;
-		const atk = selectedAttackerForBlocking;
-		const wasOnAtk = (blockAssignments[atk] ?? []).includes(cardId);
+	// Click one of your own creatures: if it's already assigned to some attacker, this unassigns it
+	// immediately. If it's unassigned, this arms/un-arms it as the blocker waiting for a target.
+	function onClickMyBlockerCandidate(cardId: string) {
+		const isAssigned = Object.values(blockAssignments).some((ids) => ids.includes(cardId));
+		if (isAssigned) {
+			const next: Record<string, string[]> = {};
+			for (const [k, ids] of Object.entries(blockAssignments)) {
+				const filtered = ids.filter((id) => id !== cardId);
+				if (filtered.length) next[k] = filtered;
+			}
+			blockAssignments = next;
+			if (selectedBlockerCardId === cardId) selectedBlockerCardId = null;
+			return;
+		}
+		selectedBlockerCardId = selectedBlockerCardId === cardId ? null : cardId;
+	}
+	// Click an attacking creature: assigns the currently-armed blocker to it (stripping that
+	// blocker from anywhere else it was assigned first) and clears the armed state. No-op if
+	// nothing's armed yet.
+	function onClickAttacker(attackerId: string) {
+		if (!selectedBlockerCardId) return;
+		const cardId = selectedBlockerCardId;
 		const next: Record<string, string[]> = {};
 		for (const [k, ids] of Object.entries(blockAssignments)) {
 			const filtered = ids.filter((id) => id !== cardId);
 			if (filtered.length) next[k] = filtered;
 		}
-		if (!wasOnAtk) next[atk] = [...(next[atk] ?? []), cardId];
+		next[attackerId] = [...(next[attackerId] ?? []), cardId];
 		blockAssignments = next;
+		selectedBlockerCardId = null;
 	}
 	function confirmBlocks() {
 		send({ type: 'declareBlockers', player: mySeatId, blocks: blockAssignments });
-		selectedAttackerForBlocking = null;
+		selectedBlockerCardId = null;
 		blockAssignments = {};
 	}
 	function noBlocks() {
 		send({ type: 'declareBlockers', player: mySeatId, blocks: {} });
-		selectedAttackerForBlocking = null;
+		selectedBlockerCardId = null;
 		blockAssignments = {};
 	}
+
+	// --- attacker/blocker connector lines (Arena-style) ---------------------------------------
+	// Plain (non-reactive) DOM ref storage, populated via the registerCardEl action below — these
+	// don't need to trigger re-renders themselves, they're only read on demand when recomputing
+	// line coordinates.
+	const cardEls: Record<string, HTMLElement> = {};
+	function registerCardEl(node: HTMLElement, cardId: string) {
+		cardEls[cardId] = node;
+		return {
+			update(newId: string) {
+				if (cardEls[cardId] === node) delete cardEls[cardId];
+				cardId = newId;
+				cardEls[cardId] = node;
+			},
+			destroy() {
+				if (cardEls[cardId] === node) delete cardEls[cardId];
+			}
+		};
+	}
+
+	let svgOverlayEl: SVGSVGElement | null = $state(null);
+	let blockLines = $state<{ x1: number; y1: number; x2: number; y2: number; key: string }[]>([]);
+
+	// Coordinates are computed relative to the SVG overlay's OWN bounding rect (not the padded
+	// container it sits in) — sidesteps any padding/box-model offset math entirely, since the
+	// overlay's rect already reflects wherever the browser actually placed it.
+	async function recomputeBlockLines() {
+		await tick();
+		if (!svgOverlayEl || !game?.combat || game.combat.defenderSeat !== mySeatId) {
+			blockLines = [];
+			return;
+		}
+		const origin = svgOverlayEl.getBoundingClientRect();
+		const center = (el: HTMLElement) => {
+			const r = el.getBoundingClientRect();
+			return { x: r.left + r.width / 2 - origin.left, y: r.top + r.height / 2 - origin.top };
+		};
+		const lines: typeof blockLines = [];
+		for (const [attackerId, blockerIds] of Object.entries(blockAssignments)) {
+			const attackerEl = cardEls[attackerId];
+			if (!attackerEl) continue;
+			const a = center(attackerEl);
+			for (const blockerId of blockerIds) {
+				const blockerEl = cardEls[blockerId];
+				if (!blockerEl) continue;
+				const b = center(blockerEl);
+				lines.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, key: `${attackerId}-${blockerId}` });
+			}
+		}
+		blockLines = lines;
+	}
+
+	$effect(() => {
+		blockAssignments;
+		game?.combat;
+		recomputeBlockLines();
+	});
+	$effect(() => {
+		window.addEventListener('resize', recomputeBlockLines);
+		return () => window.removeEventListener('resize', recomputeBlockLines);
+	});
 
 	function toggleDiscardSelect(cardId: string) {
 		const next = new Set(discardSelected);
@@ -571,10 +680,14 @@
 					<div class="lib-block">
 						Library<br /><span class="lib-value">{p.library.length}</span>
 						{#if seat.id === mySeatId}
-							<div class="stepper">
+							<div class="lib-buttons">
 								<button class="btn small" onclick={() => send({ type: 'draw', player: key })}>Draw</button>
 								<button class="btn small" onclick={() => send({ type: 'shuffleLibrary', player: key })}>Shuffle</button>
 							</div>
+							<form class="lib-search" onsubmit={(e) => { e.preventDefault(); searchLibrary(key); }}>
+								<input type="text" bind:value={librarySearch} placeholder="Search library…" />
+								<button type="submit" class="btn small">Search</button>
+							</form>
 						{/if}
 					</div>
 					{#if seat.id === mySeatId}
@@ -582,11 +695,15 @@
 							<button class="btn small" onclick={() => send({ type: 'openingHand', player: key })}>Opening 7</button>
 							<button class="btn small" onclick={() => send({ type: 'mulligan', player: key })}>Mulligan ({p.mulligans})</button>
 						</div>
-						{@const pendingReason = game!.pendingDiscard
+						{@const pendingReason = game!.pendingDiscard && game!.pendingDiscard.player === mySeatId
 							? `Discard ${game!.pendingDiscard.count} card(s) first`
-							: game!.combat
-								? (game!.combat.defenderSeat === mySeatId ? 'Declare your blocks first' : `Waiting for ${seatLabel(game!.combat.defenderSeat)} to declare blocks…`)
-								: ''}
+							: game!.combat && game!.combat.defenderSeat === mySeatId
+								? 'Declare your blocks first'
+								: game!.combat && game!.combat.attackerSeat === mySeatId
+									? `Waiting for ${seatLabel(game!.combat.defenderSeat)} to declare blocks…`
+									: game!.active !== mySeatId
+										? `Waiting for ${seatLabel(game!.active)}'s turn`
+										: ''}
 						<div class="turn-controls">
 							{#if game!.active === mySeatId && !pendingReason && myEligibleAttackers.length && !attackModeOn}
 								<button class="btn small" onclick={startAttackMode}>Declare attackers</button>
@@ -679,21 +796,30 @@
 			{@const info = lookupCard(c.name)}
 			{@const isCreature = (info?.typeLine ?? '').includes('Creature')}
 			{@const inAttackMode = attackModeOn && key === mySeatId}
-			{@const inBlockMode = key === mySeatId && game?.combat?.defenderSeat === mySeatId && !!selectedAttackerForBlocking}
-			{@const alreadyBlocking = Object.values(blockAssignments).some((ids) => ids.includes(c.id))}
+			{@const iAmDefending = game?.combat?.defenderSeat === mySeatId}
+			{@const inBlockMode = key === mySeatId && iAmDefending}
+			{@const isAttackerChip = iAmDefending && key !== mySeatId && (game?.combat?.attackers.includes(c.id) ?? false)}
+			{@const alreadyBlockingThis = key === mySeatId && Object.values(blockAssignments).some((ids) => ids.includes(c.id))}
 			{@const attackEligible = isCreature && !c.tapped && (!c.summoningSick || hasKeyword(c.name, 'haste'))}
-			{@const blockEligible = isCreature && !c.tapped && !alreadyBlocking}
-			{@const selectedAsAttacker = selectedAttackers.has(c.id)}
-			{@const selectedAsBlocker = selectedAttackerForBlocking ? (blockAssignments[selectedAttackerForBlocking] ?? []).includes(c.id) : false}
-			{@const combatSelected = (inAttackMode && selectedAsAttacker) || (inBlockMode && selectedAsBlocker)}
-			{@const combatIneligible = (inAttackMode && !attackEligible) || (inBlockMode && !blockEligible && !selectedAsBlocker)}
-			<div class="card-chip bf-card {c.tapped ? 'tapped' : ''} {combatSelected ? 'selected-for-combat' : ''} {combatIneligible ? 'combat-ineligible' : ''}">
+			{@const blockCandidateEligible = key === mySeatId && isCreature && !c.tapped}
+			{@const attackerBlockableByArmed = !selectedBlockerName || canBlockClient(c.name, selectedBlockerName)}
+			{@const armed = selectedBlockerCardId === c.id}
+			{@const combatSelected = (inAttackMode && selectedAttackers.has(c.id)) || (inBlockMode && (alreadyBlockingThis || armed))}
+			{@const combatIneligible =
+				(inAttackMode && !attackEligible) ||
+				(inBlockMode && isAttackerChip && !attackerBlockableByArmed) ||
+				(inBlockMode && key === mySeatId && !alreadyBlockingThis && !armed && !blockCandidateEligible)}
+			<div
+				class="card-chip bf-card {c.tapped ? 'tapped' : ''} {combatSelected ? 'selected-for-combat' : ''} {combatIneligible ? 'combat-ineligible' : ''} {isAttackerChip ? 'attacking-highlight' : ''}"
+				use:registerCardEl={c.id}
+			>
 				<button
 					class="chip-main"
-					disabled={inAttackMode ? !attackEligible : inBlockMode ? (!blockEligible && !selectedAsBlocker) : key !== mySeatId}
+					disabled={inAttackMode ? !attackEligible : isAttackerChip ? !attackerBlockableByArmed : inBlockMode ? (!blockCandidateEligible && !alreadyBlockingThis) : key !== mySeatId}
 					onclick={() => {
 						if (inAttackMode) return toggleAttackerSelect(c.id);
-						if (inBlockMode) return toggleBlockerSelect(c.id);
+						if (isAttackerChip) return onClickAttacker(c.id);
+						if (inBlockMode) return onClickMyBlockerCandidate(c.id);
 						send({ type: 'toggleTap', player: key, cardId: c.id });
 					}}
 					title={c.summoningSick ? `${c.name} — summoning sickness` : c.name}
@@ -711,47 +837,12 @@
 			</div>
 		{/snippet}
 
-		{#if game.combat && (game.combat.attackerSeat === mySeatId || game.combat.defenderSeat === mySeatId)}
-			{@const combat = game.combat}
-			<div class="combat-banner">
-				{#if combat.defenderSeat === mySeatId}
-					<div class="combat-title">Incoming attack — declare blocks</div>
-					<div class="attacker-chip-row">
-						{#each combat.attackers as attackerId (attackerId)}
-							{@const attackerCard = game.players[combat.attackerSeat].battlefield.find((c) => c.id === attackerId)}
-							{#if attackerCard}
-								{@const info = lookupCard(attackerCard.name)}
-								{@const blockedBy = blockAssignments[attackerId]?.length ?? 0}
-								<button
-									type="button"
-									class="attacker-select-chip {selectedAttackerForBlocking === attackerId ? 'active' : ''}"
-									onclick={() => (selectedAttackerForBlocking = attackerId)}
-								>
-									{@render cardImg(attackerCard.name)}
-									<span class="cname">
-										{attackerCard.name}{#if info?.power != null} ({info.power}/{info.toughness}){/if}
-										{#if blockedBy} &mdash; blocked by {blockedBy}{/if}
-									</span>
-								</button>
-							{/if}
-						{/each}
-					</div>
-					<div class="combat-actions">
-						<span class="combat-hint">
-							{selectedAttackerForBlocking ? 'Click your untapped creatures below to assign blockers.' : 'Select an attacker above to assign blockers.'}
-						</span>
-						<button type="button" class="btn" onclick={noBlocks}>No blocks</button>
-						<button type="button" class="btn purple" onclick={confirmBlocks}>Declare blocks</button>
-					</div>
-				{:else}
-					<div class="combat-title">
-						Attacking with {combat.attackers.length} creature(s) &mdash; waiting for {seatLabel(combat.defenderSeat)} to declare blocks&hellip;
-					</div>
-				{/if}
-			</div>
-		{/if}
-
 		<div class="shared-battlefield">
+			<svg class="block-lines-overlay" bind:this={svgOverlayEl}>
+				{#each blockLines as line (line.key)}
+					<line x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2} />
+				{/each}
+			</svg>
 			{#each displaySeats.filter((s): s is SeatDef => !!s) as seat, i (seat.id)}
 				{@const p = game.players[seat.id]}
 				{@const groups = groupByCategory(p.battlefield)}
@@ -775,7 +866,7 @@
 					{#if !p.battlefield.length}
 						<div class="empty-hint">No permanents in play</div>
 					{:else}
-						{#each CATEGORY_ORDER as cat}
+						{#each (i === 0 ? [...CATEGORY_ORDER].reverse() : CATEGORY_ORDER) as cat}
 							{#if groups[cat]?.length}
 								<div class="bf-category">
 									<div class="bf-cat-label">{cat} ({groups[cat].length})</div>
@@ -792,6 +883,28 @@
 				{#if i === 0}<div class="sb-divider"></div>{/if}
 			{/each}
 		</div>
+
+		{#if game.combat && (game.combat.attackerSeat === mySeatId || game.combat.defenderSeat === mySeatId)}
+			{@const combat = game.combat}
+			<div class="combat-banner">
+				{#if combat.defenderSeat === mySeatId}
+					<div class="combat-title">Incoming attack — declare blocks</div>
+					<div class="combat-hint">
+						{selectedBlockerName
+							? `${selectedBlockerName} selected — click the attacker (orange) it's blocking.`
+							: "Click one of your untapped creatures below, then click the attacker (highlighted) it's blocking."}
+					</div>
+					<div class="combat-actions">
+						<button type="button" class="btn" onclick={noBlocks}>No blocks</button>
+						<button type="button" class="btn purple" onclick={confirmBlocks}>Declare blocks</button>
+					</div>
+				{:else}
+					<div class="combat-title">
+						Attacking with {combat.attackers.length} creature(s) &mdash; waiting for {seatLabel(combat.defenderSeat)} to declare blocks&hellip;
+					</div>
+				{/if}
+			</div>
+		{/if}
 
 		{#if bottomSeat}{@render playerRow(bottomSeat)}{/if}
 	</div>
@@ -820,6 +933,8 @@
 			<div class="zone-menu-divider"></div>
 			<button onclick={() => { send({ type: 'adjustCounter', player: zoneMenu!.player, cardId: zoneMenu!.cardId, counterType: '+1/+1', delta: 1 }); closeZoneMenu(); }}>+1/+1 counter</button>
 			<button onclick={() => { send({ type: 'adjustCounter', player: zoneMenu!.player, cardId: zoneMenu!.cardId, counterType: '+1/+1', delta: -1 }); closeZoneMenu(); }}>&minus;1/&minus;1 counter</button>
+			<div class="zone-menu-divider"></div>
+			<button onclick={() => { send({ type: 'activateAbility', player: zoneMenu!.player, cardId: zoneMenu!.cardId }); closeZoneMenu(); }}>Activate ability (tap)</button>
 		{/if}
 	</div>
 {/if}
@@ -986,6 +1101,14 @@
 	.stepper button { width: 1.6rem; height: 1.6rem; border-radius: 6px; background: var(--surface-raised); border: 1px solid var(--border); color: var(--fg); }
 	.lib-block { font-size: 0.78rem; color: var(--fg-dim); }
 	.lib-value { font-family: var(--font-display); font-size: 1.15rem; color: var(--fg); }
+	.lib-buttons { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.4rem; }
+	.lib-buttons button { width: 100%; }
+	.lib-search { display: flex; flex-direction: column; gap: 0.25rem; margin-top: 0.4rem; }
+	.lib-search input {
+		width: 100%; background: var(--surface-slot); border: 1px solid var(--border); border-radius: 6px;
+		color: var(--fg); padding: 0.3rem 0.4rem; font-size: 0.68rem;
+	}
+	.lib-search button { width: 100%; }
 	.hand-setup { display: flex; flex-direction: column; gap: 0.3rem; }
 	.hand-setup button { width: 100%; }
 	.turn-controls { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.2rem; }
@@ -1043,7 +1166,9 @@
 	.menu-btn.zoom-btn { left: 0.15rem; right: auto; }
 	.empty-hint { font-size: 0.76rem; color: var(--fg-dim); font-style: italic; padding: 0.3rem 0.1rem; }
 
-	.shared-battlefield { padding: 1.1rem 1.3rem; display: flex; flex-direction: column; gap: 0.9rem; }
+	.shared-battlefield { position: relative; padding: 1.1rem 1.3rem; display: flex; flex-direction: column; gap: 0.9rem; }
+	.block-lines-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; overflow: visible; }
+	.block-lines-overlay line { stroke: #e88a2e; stroke-width: 3; stroke-opacity: 0.55; stroke-linecap: round; }
 	.sb-half { min-height: 11rem; display: flex; flex-direction: column; gap: 0.65rem; margin: -0.6rem -0.7rem; padding: 0.6rem 0.7rem; border-radius: 9px; }
 	.sb-half.mine { background: color-mix(in srgb, var(--ok) 7%, transparent); }
 	.sb-half.theirs { background: color-mix(in srgb, var(--accent) 5%, transparent); }
@@ -1068,16 +1193,10 @@
 		border: 2px solid var(--accent);
 	}
 	.combat-title { font-size: 0.9rem; font-weight: 600; color: var(--accent); }
-	.attacker-chip-row { display: flex; flex-wrap: wrap; gap: 0.6rem; }
-	.attacker-select-chip {
-		display: flex; flex-direction: column; align-items: center; gap: 0.3rem; width: 6.6rem;
-		background: var(--surface-slot); border: 2px solid var(--border); border-radius: 9px;
-		padding: 0.4rem; color: var(--fg); font-size: 0.68rem; text-align: center;
-	}
-	.attacker-select-chip :global(img) { width: 100%; aspect-ratio: 5/7; object-fit: cover; border-radius: 6px; }
-	.attacker-select-chip.active { border-color: var(--accent); }
 	.combat-actions { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
-	.combat-hint { font-size: 0.78rem; color: var(--fg-dim); margin-right: auto; }
+	.combat-hint { font-size: 0.78rem; color: var(--fg-dim); }
+
+	.card-chip.attacking-highlight .chip-main { outline: 3px solid #e88a2e; outline-offset: -1px; }
 
 	.discard-modal { max-width: min(90vw, 34rem); }
 	.discard-hand-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center; }

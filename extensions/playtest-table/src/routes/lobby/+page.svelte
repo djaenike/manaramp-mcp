@@ -43,6 +43,10 @@
 	let view: View = $state('main');
 	let playerName = $state('');
 	let busy = $state(false);
+	// Room creation now routinely takes a few real seconds (Scryfall rate-limit-compliant pacing
+	// while resolving the seeded deck's card data) — a disabled button with no other feedback reads
+	// as stuck/broken over that span, so this gives the busy period a visible, specific label.
+	let busyLabel = $state('');
 	let actionError = $state('');
 
 	async function createRoom(label: string, seats: { label: string; controller: 'human' | 'ai' }[]) {
@@ -58,6 +62,7 @@
 
 	async function watchAiVsAi() {
 		busy = true;
+		busyLabel = 'Creating table — resolving both decks against Scryfall…';
 		actionError = '';
 		try {
 			const roomId = await createRoom('AI vs AI', [
@@ -68,6 +73,7 @@
 		} catch (e) {
 			actionError = e instanceof Error ? e.message : String(e);
 			busy = false;
+			busyLabel = '';
 		}
 	}
 
@@ -80,6 +86,7 @@
 			busy = false;
 			return;
 		}
+		busyLabel = "Creating table — resolving the AI's deck against Scryfall…";
 		try {
 			const roomId = await createRoom(`${name} vs AI`, [
 				{ label: name, controller: 'human' },
@@ -89,6 +96,7 @@
 		} catch (e) {
 			actionError = e instanceof Error ? e.message : String(e);
 			busy = false;
+			busyLabel = '';
 		}
 	}
 
@@ -104,11 +112,13 @@
 
 	async function joinGame(roomId: string) {
 		busy = true;
+		busyLabel = 'Joining table…';
 		await goto(`/room/${roomId}?as=${encodeURIComponent(playerName.trim())}`);
 	}
 
 	async function startNewTable() {
 		busy = true;
+		busyLabel = 'Creating table…';
 		actionError = '';
 		const name = playerName.trim();
 		try {
@@ -122,6 +132,7 @@
 		} catch (e) {
 			actionError = e instanceof Error ? e.message : String(e);
 			busy = false;
+			busyLabel = '';
 		}
 	}
 
@@ -166,6 +177,7 @@
 					<span class="action-badge" class:pulse={openGames.length > 0}>{openGames.length} open</span>
 				</button>
 			</div>
+			{#if busy && busyLabel}<div class="empty-hint">{busyLabel}</div>{/if}
 			{#if actionError}<div class="error-line">{actionError}</div>{/if}
 		</section>
 	{:else}
@@ -195,6 +207,7 @@
 					{/each}
 				</ul>
 			{/if}
+			{#if busy && busyLabel}<div class="empty-hint">{busyLabel}</div>{/if}
 			{#if actionError}<div class="error-line">{actionError}</div>{/if}
 			<button class="btn" disabled={busy} onclick={startNewTable}>Start a new table &mdash; wait for someone to join</button>
 		</section>
