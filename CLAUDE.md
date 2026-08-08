@@ -63,14 +63,22 @@ descriptions and error messages:
   parameter (`q`) is inferred from a syntax guide rather than confirmed against live docs (their docs site
   blocks automated fetching).
 - **playtest-table** (`playtest_list_games`, `playtest_create_table`, `playtest_get_state`,
-  `playtest_load_deck`, `playtest_do_action`) — NOT a public API at all: a companion local dev server
-  (`extensions/playtest-table`, SvelteKit + Cloudflare Durable Objects) that must be running
-  (`npx wrangler dev --port 8787` from that directory) before any of these 5 tools work. Every one
-  fails fast with an actionable message if it isn't. `PLAYTEST_SERVER_URL` overrides the default
-  `http://127.0.0.1:8787`. See `extensions/README.md` for what this actually is and its own further
-  Claude-Code-only conveniences (CLI scripts, a turn-notification auto-wake loop) that these 5 tools
-  don't replace — they're the subset that also works from Claude Desktop, which has no Bash tool or
-  background-task notifications to run those with.
+  `playtest_load_deck`, `playtest_do_action`) — NOT a public API at all: a companion server
+  (`extensions/playtest-table`, SvelteKit + Cloudflare Durable Objects) deployed as a real Cloudflare
+  Worker at `PLAYTEST_BASE` in `index.js` (`https://scryfall-mcp.playtest-table.workers.dev` by
+  default — no local process needs to be running for normal use). `PLAYTEST_SERVER_URL` overrides
+  that default to point at a local `npx wrangler dev --port 8787` instead, for developing the
+  playtest-table app itself. Every one of these 5 tools fails fast with an actionable message if the
+  target server can't be reached. Critically, an AI-controlled seat's turns are **not** driven by
+  these tools or by any Claude session at all in normal play — the deployed Worker resolves them
+  itself via a Durable Object alarm that calls the Anthropic API directly (its own
+  `ANTHROPIC_API_KEY` secret, Haiku 4.5 by default), so a game plays itself end-to-end the moment a
+  human clicks through the lobby, with zero dependency on this MCP server or a Claude conversation
+  being open anywhere. See `extensions/README.md` for the full autonomous-play design and its own
+  further Claude-Code-only conveniences (CLI scripts for directly scripting/observing a room over
+  its WebSocket, independent of the autonomous alarm) that these 5 tools don't replace — they're the
+  subset that also works from Claude Desktop, which has no Bash tool or background-task
+  notifications to run those with.
 - **Commander Bracket System** (`rate_deck_bracket`) — not a live data source at all: `GAME_CHANGERS`,
   `MASS_LAND_DENIAL_CARDS`, and `EXTRA_TURN_CARDS` are hardcoded reference lists (Game Changers current
   as of the Feb 9, 2026 update, reviewed by the Commander Format Panel roughly every 3-4 months —
@@ -127,34 +135,42 @@ enough to validate directly rather than leaving it as a free-form string.
 ## Deck-building final deliverable
 
 Whenever a conversation in this repo lands on a finished decklist — built via `build_budget_deck`,
-assembled manually, or fetched via `get_moxfield_decklist` — treat the job as unfinished until all of
-these are delivered, in this order, every time, not just a card list. Items 2-4 all depend on
-calling `rate_deck_bracket`, `get_deck_price_total`, and `analyze_deck_consistency`
-**unconditionally** — not just "if a budget was mentioned" — and re-calling all three after *every*
-manual swap, not once at the start:
+assembled manually, or fetched via `get_moxfield_decklist` — treat the job as unfinished until all
+three of these are delivered, in this exact order, every time. This is a fixed format (the user's own
+spec, not left to per-conversation improvisation) so delivery stays consistent:
 
-1. **The decklist itself, as one ready-to-paste block** — `Commander` / blank line / `Deck` text
-   (the same format `get_moxfield_decklist`'s `decklist_text` produces and `playtest_load_deck`'s
-   `decklist_text` param parses), shown to the user verbatim so it can be pasted straight into either
-   `playtest_load_deck` or Moxfield's own importer with no reformatting.
-2. **A compact summary table**: bracket rating (`rate_deck_bracket`'s `bracket_estimate`) | total
-   price (`get_deck_price_total`'s `total_usd`, Card Kingdom-standardized) | legality/count status
-   (`analyze_deck_consistency`'s `issues` — "clean" or the actual list).
-3. **Mana curve** — `analyze_deck_consistency`'s `mana_curve` histogram plus its
-   `curve_out_probability`, shown plainly (a small table is fine), carrying forward that tool's own
-   stated simplifying assumptions rather than dropping them.
-4. **Win conditions** — `rate_deck_bracket`'s full `combos_found` detail (piece names, `total_cmc`,
-   `speed`), translated into a plain-English turn estimate ("fast" → roughly turn 6 or earlier,
-   "slow" → turn 7+), or the deck's primary game plan if no combo was found.
-5. **A real playtest import** — `playtest_create_table` (label it with the actual commander/deck name,
-   never leave it as "Untitled table") followed by `playtest_load_deck` for that seat, so the user gets
-   a real `room_url` to open, not just a decklist to eyeball. Alongside that specific `room_url`, always
-   also surface the live lobby link — `https://scryfall-mcp.playtest-table.workers.dev/lobby` (same host
-   as `PLAYTEST_BASE` in `index.js`) — and explicitly invite the user to playtest the new deck there,
-   either against the AI or by sharing the room with another human player. The direct `room_url` opens
-   this specific table; the lobby link is what lets the user (or whoever they share it with) find and
-   rejoin it later, or start a fresh table against a different opponent.
-6. **Re-run steps 2-3 after every manual swap**, not just once at the start — this generalizes a
-   real, previously-hit failure mode (a decklist that started at $75 drifted to $135 after manual
-   swaps because nothing re-verified the total after the last edit) to legality/count/curve too,
-   since a swap can just as easily break singleton or color identity as it can blow a budget.
+1. **The decklist as one ready-to-paste block** — `Commander` / blank line / `Deck` text (the same
+   format `get_moxfield_decklist`'s `decklist_text` produces and `playtest_load_deck`'s
+   `decklist_text` param parses), shown to the user verbatim. This format is directly compatible with
+   both `playtest_load_deck` and Moxfield's own importer — no reformatting needed for either.
+
+2. **A clean summary table, in this exact order and nothing else**:
+   - **Price** — `get_deck_price_total`'s `total_usd` (Card Kingdom-standardized).
+   - **Commander** — name(s) plus color identity (e.g. "Edgar Markov — Mardu (B/R/W)").
+   - **Bracket Power** — `rate_deck_bracket`'s `bracket_estimate`.
+   - **Combo list** — `rate_deck_bracket`'s `combos_found`, piece names only.
+   - **Wincon(s)** — combo-based if `combos_found` isn't empty, otherwise the deck's primary
+     non-combo game plan (this is where a combo's turn-speed estimate belongs too, e.g. "Dramatic
+     Reversal + Isochron Scepter, achievable turn 6 or earlier").
+   - **General strategy** — a short paragraph on how to actually pilot the deck turn to turn.
+
+   `rate_deck_bracket`, `get_deck_price_total`, and `analyze_deck_consistency` are still all called
+   **unconditionally** every time as pre-delivery checks — not just "if a budget was mentioned" — and
+   re-checked after *every* manual swap, not once at the start. This is a real, previously-hit failure
+   mode: a decklist that started at $75 drifted to $135 after manual swaps because nothing
+   re-verified the total after the last edit; a swap can just as easily break singleton or color
+   identity. `analyze_deck_consistency`'s result is deliberately **not** its own table row, though —
+   if it comes back clean, say nothing about it; if it finds something (wrong card count, a
+   singleton violation, an off-color card, something not Commander-legal), fix it before delivering
+   and briefly note what got corrected, rather than cluttering the table with a routine status line.
+
+3. **A real playtest link** — `playtest_create_table` with exactly one human seat and one AI seat,
+   labeled with the actual deck name (never "Untitled table"). Because the table includes an AI
+   seat, this auto-populates the AI seat with its own random EDHREC opponent deck and opening hand;
+   follow it with `playtest_load_deck` for the human seat, loading the deck just built. Deliver just
+   the resulting `room_url` — one click and the user is in a live game, both sides already dealt in.
+   Do not explain how to use the playtest table itself (no walkthrough of controls or UI) — it's
+   meant to be self-explanatory, and instructional text just adds clutter here.
+
+(Future, not for this pass: a paywall gate in front of the playtest link for non-paying users —
+noted here as context for later planning, nothing to build against yet.)

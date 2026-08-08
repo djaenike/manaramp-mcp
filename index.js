@@ -71,7 +71,11 @@ const CARDKINGDOM_PRICELIST_URL = "https://api.cardkingdom.com/api/v2/pricelist"
 // instead (e.g. while developing playtest-table itself). See extensions/README.md.
 const PLAYTEST_BASE = process.env.PLAYTEST_SERVER_URL || "https://scryfall-mcp.playtest-table.workers.dev";
 const PLAYTEST_JSON_HEADERS = { "Content-Type": "application/json" };
-const PLAYTEST_TIMEOUT_MS = 5000;
+// Bumped from 5000ms: the Scryfall rate-limit compliance fix (scryfallFetch/fetchWithRetry pacing)
+// legitimately made deck resolution take longer (measured ~3-5s for a real ~100-card deck under
+// normal conditions, and up to ~30s more if an actual 429 triggers a wait-then-retry) — a 5s
+// ceiling on the round trip risked failing on exactly the slow-but-correct path this fix produces.
+const PLAYTEST_TIMEOUT_MS = 20000;
 const PLAYTEST_ZONES = ["command", "library", "hand", "battlefield", "graveyard", "exile"];
 
 // Scryfall requires an accurate User-Agent and an Accept header on every request
@@ -909,7 +913,7 @@ server.tool(
 // --- Tool 11: playtest_list_games ---
 server.tool(
   "playtest_list_games",
-  "List every playtest table currently known to the local playtest server's lobby, including each seat's controller (human/ai) and claim state. For rooms with an AI-controlled seat, also reports whose turn it is right now so you can tell which ones actually need an AI move vs. are just sitting idle. Requires `npx wrangler dev --port 8787` running in extensions/playtest-table — see extensions/README.md.",
+  "List every playtest table currently known to the playtest server's lobby, including each seat's controller (human/ai) and claim state. For rooms with an AI-controlled seat, also reports whose turn it is right now so you can tell which ones actually need an AI move vs. are just sitting idle. Talks to the deployed playtest server by default (no setup needed); set PLAYTEST_SERVER_URL to point at a local `npx wrangler dev --port 8787` instead — see extensions/README.md.",
   {
     only_needs_ai_move: z.boolean().optional().describe("If true, only include rooms where an AI-controlled seat is currently active. Default false (list every table)."),
   },
@@ -957,12 +961,12 @@ server.tool(
 // --- Tool 12: playtest_create_table ---
 server.tool(
   "playtest_create_table",
-  "Create a new playtest table with 2 or more seats, each human- or AI-controlled. AI-controlled seats are automatically given a random EDHREC average-build deck and a 7-card opening hand server-side — no extra step needed before they can play. Use this for 'watch AI vs AI', 'play me vs AI', or setting up a table for two humans. Returns a room id (for the other playtest_* tools) and a browser URL for anyone who wants to watch or play from the board UI. Requires `npx wrangler dev --port 8787` running in extensions/playtest-table.",
+  "Create a new playtest table with 2 or more seats, each human- or AI-controlled. If the table includes at least one AI seat, EVERY seat (human included) is automatically given a random EDHREC average-build deck and a 7-card opening hand server-side immediately — no extra step needed before anyone can play. Tables with only human seats are left empty (no auto-deck). For the deck-delivery flow — a human vs. an AI opponent — call this with one human seat and one AI seat, then use playtest_load_deck to overwrite the human seat's auto-dealt deck with the actual deck just built; the AI seat's random deck stays as-is as the opponent. Returns a room id (for the other playtest_* tools) and a browser URL for anyone who wants to watch or play from the board UI. Talks to the deployed playtest server by default (no setup needed); set PLAYTEST_SERVER_URL to point at a local `npx wrangler dev --port 8787` instead.",
   {
     label: z.string().optional().describe("Display label for the table, e.g. 'Friday night EDH'. Default 'Untitled table'."),
     seats: z.array(z.object({
       label: z.string().describe("Seat display label, e.g. 'Alice' or 'AI opponent'"),
-      controller: z.enum(["human", "ai"]).describe("'ai' seats are auto-decked (random EDHREC deck + opening hand) immediately"),
+      controller: z.enum(["human", "ai"]).describe("If ANY seat in this table is 'ai', every seat (human included) is auto-decked (random EDHREC deck + opening hand) immediately — see the tool description."),
     })).min(2).describe("2 or more seats, in turn order — the first entry becomes seat0, the second seat1, etc."),
   },
   async ({ label, seats }) => {
@@ -991,7 +995,7 @@ server.tool(
 // --- Tool 13: playtest_get_state ---
 server.tool(
   "playtest_get_state",
-  "Read the full current board state of a playtest table — every seat's life, hand (with mana cost inline), battlefield, library/graveyard/exile counts, and the recent game log. Use this to see what's happening before deciding a move with playtest_do_action. IMPORTANT: the returned `seats` array is how you know which seat_id to act on — each seat has `controller` ('human' or 'ai') and `label`. Before calling playtest_do_action, always confirm which seat you're actually meant to be playing (normally the one with controller:'ai') rather than assuming — acting on the wrong seat means playing someone else's cards for them. Requires `npx wrangler dev --port 8787` running in extensions/playtest-table.",
+  "Read the full current board state of a playtest table — every seat's life, hand (with mana cost inline), battlefield, library/graveyard/exile counts, and the recent game log. Use this to see what's happening before deciding a move with playtest_do_action. IMPORTANT: the returned `seats` array is how you know which seat_id to act on — each seat has `controller` ('human' or 'ai') and `label`. Before calling playtest_do_action, always confirm which seat you're actually meant to be playing (normally the one with controller:'ai') rather than assuming — acting on the wrong seat means playing someone else's cards for them. Talks to the deployed playtest server by default (no setup needed); set PLAYTEST_SERVER_URL to point at a local `npx wrangler dev --port 8787` instead.",
   {
     room_id: z.string().describe("Room id, from playtest_list_games or playtest_create_table"),
   },
@@ -1008,7 +1012,7 @@ server.tool(
 // --- Tool 14: playtest_load_deck ---
 server.tool(
   "playtest_load_deck",
-  "Load a full Commander deck into one seat of an existing playtest table — either pasted decklist text (Moxfield-style export, e.g. lines like '1 Sol Ring' under an optional 'Commander' section header) or a random EDHREC average build (name a commander, or leave both decklist_text and commander_name blank for a random pick from a curated pool). Card names are resolved against Scryfall first, so every card in the resulting hand shows its real mana cost. Draws a fresh opening hand for that seat afterward by default. Requires `npx wrangler dev --port 8787` running in extensions/playtest-table.",
+  "Load a full Commander deck into one seat of an existing playtest table — either pasted decklist text (Moxfield-style export, e.g. lines like '1 Sol Ring' under an optional 'Commander' section header) or a random EDHREC average build (name a commander, or leave both decklist_text and commander_name blank for a random pick from a curated pool). Card names are resolved against Scryfall first, so every card in the resulting hand shows its real mana cost. Draws a fresh opening hand for that seat afterward by default. Talks to the deployed playtest server by default (no setup needed); set PLAYTEST_SERVER_URL to point at a local `npx wrangler dev --port 8787` instead.",
   {
     room_id: z.string().describe("Room id to load the deck into"),
     seat_id: z.string().describe("Seat id, e.g. 'seat0' — check playtest_get_state's `seats` array (controller + label per seat) first to confirm you're loading this deck onto the RIGHT seat, not just the first one listed."),
@@ -1077,7 +1081,7 @@ server.tool(
 // --- Tool 15: playtest_do_action ---
 server.tool(
   "playtest_do_action",
-  "Perform one game action on an existing playtest table's live board — move or tap a card, draw, shuffle, take a mulligan or opening hand, adjust life or a counter, add a card/token, remove a card, pass the turn, reset the board, permanently end the table, or run several of these as one batch. General-purpose escape hatch for everything except loading a full deck — use playtest_load_deck for that instead, since it handles the required Scryfall card-resolution step this tool does not. BEFORE YOUR FIRST ACTION IN A ROOM: call playtest_get_state and check its `seats` array to find which seat_id you're actually meant to be playing (its `controller` field is 'human' or 'ai', and `claimedBy` shows if a human has claimed it) — this tool has no way to know that for you, and it will happily let you move a human player's cards if you pass the wrong seat_id as `player`. Don't guess or default to the first seat listed. endTable is IRREVERSIBLE: it wipes the room's storage and removes it from the lobby list. For type 'batch', the 'actions' array uses the RAW wire field names (camelCase: cardName, fromZone, toZone, counterType — not this tool's own snake_case params), e.g. actions: [{\"type\":\"moveCard\",\"player\":\"seat0\",\"cardName\":\"Island\",\"fromZone\":\"hand\",\"toZone\":\"battlefield\"},{\"type\":\"toggleTap\",\"player\":\"seat0\",\"cardName\":\"Island\"},{\"type\":\"passTurn\"}]. Requires `npx wrangler dev --port 8787` running in extensions/playtest-table.",
+  "Perform one game action on an existing playtest table's live board — move or tap a card, draw, shuffle, take a mulligan or opening hand, adjust life or a counter, add a card/token, remove a card, pass the turn, reset the board, permanently end the table, or run several of these as one batch. General-purpose escape hatch for everything except loading a full deck — use playtest_load_deck for that instead, since it handles the required Scryfall card-resolution step this tool does not. BEFORE YOUR FIRST ACTION IN A ROOM: call playtest_get_state and check its `seats` array to find which seat_id you're actually meant to be playing (its `controller` field is 'human' or 'ai', and `claimedBy` shows if a human has claimed it) — this tool has no way to know that for you, and it will happily let you move a human player's cards if you pass the wrong seat_id as `player`. Don't guess or default to the first seat listed. endTable is IRREVERSIBLE: it wipes the room's storage and removes it from the lobby list. For type 'batch', the 'actions' array uses the RAW wire field names (camelCase: cardName, fromZone, toZone, counterType — not this tool's own snake_case params), e.g. actions: [{\"type\":\"moveCard\",\"player\":\"seat0\",\"cardName\":\"Island\",\"fromZone\":\"hand\",\"toZone\":\"battlefield\"},{\"type\":\"toggleTap\",\"player\":\"seat0\",\"cardName\":\"Island\"},{\"type\":\"passTurn\"}]. Talks to the deployed playtest server by default (no setup needed); set PLAYTEST_SERVER_URL to point at a local `npx wrangler dev --port 8787` instead.",
   {
     room_id: z.string().describe("Room id this action applies to"),
     type: z.enum([

@@ -9,16 +9,26 @@ doesn't run over stdio.
 **Update:** a subset of this — create a table, load a deck, read state, act on the board — is now
 also exposed as real MCP tools directly in root `index.js` (`playtest_list_games`,
 `playtest_create_table`, `playtest_get_state`, `playtest_load_deck`, `playtest_do_action`), so any
-MCP client (Claude Desktop included, not just Claude Code) can drive a game via chat, as long as
-the local server below is running. The CLI scripts and the turn-notification auto-wake loop
+MCP client (Claude Desktop included, not just Claude Code) can drive a game via chat. These tools
+talk to the deployed Worker by default (see below) — no local server needs to be running for normal
+use; `PLAYTEST_SERVER_URL` only needs setting to point them at a local `wrangler dev` instead, for
+developing the playtest-table app itself. The CLI scripts and the turn-notification auto-wake loop
 described in this file remain Claude-Code-only conveniences — they depend on a Bash tool and
 background-task notifications that Claude Desktop simply doesn't have; a Desktop session drives
 games entirely through those 5 tools instead. See root `CLAUDE.md` for the tool list.
 
-`playtest-table/` is a SvelteKit app deployed as a Cloudflare Worker, with a Durable Object holding
-each room's live game state and pushing updates to every connected client over WebSockets. There's
-no separate card database file anymore — any deck (pasted, or pulled at random from EDHREC) is
-cross-referenced against Scryfall live, server-side, at import time.
+`playtest-table/` is a SvelteKit app **deployed as a real Cloudflare Worker**
+(`https://scryfall-mcp.playtest-table.workers.dev`, same host as `PLAYTEST_BASE` in root
+`index.js`), with a Durable Object holding each room's live game state and pushing updates to every
+connected client over WebSockets. There's no separate card database file anymore — any deck
+(pasted, or pulled at random from EDHREC) is cross-referenced against Scryfall live, server-side, at
+import time. Critically, this also means **an AI-controlled seat plays itself with no Claude
+session involved at all** — the Worker calls the Anthropic API directly from a Durable Object alarm
+whenever it's an AI seat's move (see "Autonomous AI play" below). The CLI scripts and
+turn-notification loop further down this file are a separate, Claude-Code-only way to directly
+script or observe a room over its raw WebSocket protocol (useful for development/testing, as most of
+this file documents) — they are not what makes a real user's game against an AI opponent actually
+play out.
 
 A room is N **seats** (currently always 2), each either `human` or `ai`-controlled, chosen at
 creation time in the lobby. "AI vs AI" isn't a separate mode — it's just a room where every seat
@@ -51,6 +61,10 @@ extensions/
 ```
 
 ## Running it locally
+
+Not required for normal play — the deployed Worker above handles that. Run this only when actually
+developing `playtest-table/` itself (a UI change, a new action, etc.) and you want a live loop
+without deploying first.
 
 `vite dev` (plain SvelteKit dev server) does **not** have Durable Object bindings — only
 `wrangler dev` runs the actual Cloudflare Workers runtime (via Miniflare) locally:
@@ -95,27 +109,58 @@ ids. Either way, run `state` first if you don't already know a room's seat ids.
 A whole turn is normally one `batch` call — one connection, one round trip — rather than one
 process per action. See the comment block at the top of `play.js` for the full command list.
 
-### Finding out a game started at all
+### Autonomous AI play
 
-There's no push channel from this server to Claude — Claude only ever acts inside an active
-conversation, and a Cloudflare Worker has no way to reach into one on its own. So if someone opens
-the lobby and starts a "Me vs AI" or "AI vs AI" table with no Claude conversation running, nothing
-plays it — there's no background process to notice. The realistic options are: (a) tell Claude a
-game started, or (b) have Claude check on its own at the start of a playtest-related conversation.
-Either way, the actual check is one command:
+An AI-controlled seat's actual moves during real (non-Claude-Code-testing) play are **not** driven
+by Claude at all — `lib/server/ai-turn.ts` calls the Anthropic API directly from inside the Durable
+Object, on its own `ANTHROPIC_API_KEY` secret (`ANTHROPIC_MODEL` env var overrides the default,
+`claude-haiku-4-5-20251001` — deliberately the cheapest current model, since every AI move on every
+deployed game is billed to that one key). This means a "Me vs AI" table plays itself end-to-end from
+the moment a human clicks through the lobby, with zero dependency on any Claude conversation being
+open anywhere — the "materially different, bigger project" this file used to describe as future
+work (a separate always-on service hitting the Claude API on its own schedule) is what this is.
+
+`GameRoom`'s `alarm()` handler (a Cloudflare Durable Object Alarm, not a cron sweep — reactive,
+scheduled ~1.5s after whatever change just left an AI seat needing to act) is the trigger, checked
+in priority order every time it fires:
+1. A pending block decision for an AI-controlled defender (`requestAiBlocks`) — can be true even
+   when `game.active` belongs to a different (attacking) seat.
+2. A pending discard for an AI-controlled seat over its hand-size limit (`requestAiDiscard`).
+3. Otherwise, if the active seat is AI-controlled, a full turn (`requestAiTurn` — one Anthropic call
+   forced to a `submit_turn` tool, returning a whole ordered action batch ending in `passTurn`).
+
+Each of these three calls the same `applyAction`/`GameRoom` action vocabulary a human's own actions
+go through (`ai-turn.ts`'s `ACTION_TYPES` is a deliberate subset — no `openingHand`/`mulligan`/
+`claimSeat`/`loadDeck`/`resetTable`, since those are pregame/meta actions that would be destructive
+or nonsensical for an automated mid-game turn to invoke). If a call throws (bad key, API outage,
+model didn't return valid tool input), the room logs the failure and retries on the next alarm;
+after 3 consecutive failures it falls back to a safe deterministic default so the room can never
+get permanently stuck — "no blocks" for a stuck block decision, an automatic discard of the
+hand's last N cards for a stuck discard, and for a stuck full turn, stopping automatic play for
+that seat entirely (logged, pointing at the `ANTHROPIC_API_KEY` secret) rather than hot-looping a
+persistently broken call. A room-wide `MAX_AI_MOVES_PER_ROOM` cap also stops automatic play once
+hit, as a blunt cost backstop against an unwatched AI-vs-AI room running forever.
+
+The model only ever sees the requesting seat's own hidden information (hand contents are described
+in full only for that seat; every other seat's hand is reported as a count only — see
+`summarizeGameState` in `ai-turn.ts`), and every returned action has its `player` field forcibly
+rewritten to the requesting seat regardless of what the model's response says, matching the same
+defensive fix already applied to the human-facing MCP tools after this project's own
+"AI played my cards" bug.
+
+### Directly scripting/observing a room (Claude Code only)
+
+Separately from the autonomous system above, Claude Code can still drive or observe a room directly
+over its raw WebSocket protocol — useful for development/testing (most of this file, and how this
+session's own combat/UI changes were exercised end-to-end), or if a user specifically asks Claude to
+play a move itself rather than let the Worker's own AI act.
 
 ```bash
 node scripts/find-ai-games.js   # or HTTP_BASE=http://127.0.0.1:8787 node scripts/find-ai-games.js
 ```
 
 Lists every room with an AI seat and flags which ones actually need a move right now (`active` is
-an AI-controlled seat) — cheaper than hand-checking `state` on every room in the lobby. From there
-it's the normal flow: `play.js` to drive the seat, `watch-for-turn.js` to get woken up for the next
-one. A real always-on bot (something that reacts to a new game with *no* Claude conversation open
-at all) would mean a separate service hitting the Claude API on a schedule/webhook, with its own
-key and its own cost — a materially different, bigger project than "a tool this chat drives."
-
-### The turn-notification loop
+an AI-controlled seat) — cheaper than hand-checking `state` on every room in the lobby.
 
 `watch-for-turn.js` connects, waits until the room's `active` player becomes a given seat id
 (`WATCH_SEAT` env var, default `"ai"` for the legacy default room), then exits:
@@ -124,19 +169,67 @@ key and its own cost — a materially different, bigger project than "a tool thi
 ROOM_URL=ws://127.0.0.1:8787/api/room/<roomId> WATCH_SEAT=seat1 node scripts/watch-for-turn.js
 ```
 
-Claude launches it as a tracked background process after every AI turn; the harness notifies Claude
-automatically when it exits, which is what makes "you don't have to ping the chat every time it's
-the AI's turn" actually work. It must be launched as the directly-tracked process (not detached with
-`&`/`disown` the way long-running servers are) — detaching it removes it from what the harness is
-watching, so its eventual exit goes unnoticed.
+Claude launches it as a tracked background process after every AI turn it drives itself; the
+harness notifies Claude automatically when it exits, which is what makes "you don't have to ping
+the chat every time it's the AI's turn" work for this direct-scripting path. It must be launched as
+the directly-tracked process (not detached with `&`/`disown` the way long-running servers are) —
+detaching it removes it from what the harness is watching, so its eventual exit goes unnoticed.
 
 ### AI vs AI spectating
 
 Create a table with both seats set to `ai`. The board detects "every seat is AI-controlled" and
 renders read-only (no life stepper, draw/mulligan/pass-turn buttons, tap-toggle, or zone-move
-popovers) — nobody can claim a seat since none are human. Claude drives both seats the same way as
-any AI seat, via `scripts/play.js` with the appropriate `player` id for each; anyone with the room
-URL just watches the board update live from the same broadcasts a normal game uses.
+popovers) — nobody can claim a seat since none are human. In normal play both seats resolve their
+own turns via the autonomous system above with nobody watching required; anyone with the room URL
+just watches the board update live from the same broadcasts a normal game uses. Claude Code can
+still drive both seats itself via `scripts/play.js` instead, same as any AI seat, for testing.
+
+## Combat & abilities
+
+Combat is the one part of the game the engine actually structures (everything else — casting a
+spell, an ETB, an activated ability's effect — is just applied directly via the general-purpose
+actions, no stack, no priority passing):
+
+- **`declareAttackers(player, cardIds)`** — validates every named creature is untapped and either
+  not summoning-sick or has haste, in a two-pass validate-then-commit (all creatures are checked
+  *before* any are tapped, so one invalid creature in a multi-attacker declaration can't leave
+  earlier ones tapped-but-uncommitted). Taps each attacker unless it has vigilance. If no attacker
+  has any legal blocker anywhere on the defending side, combat resolves immediately with no blocks
+  (skips a pointless declare-blockers step).
+- **`declareBlockers(player, blocks)`** — validates each assignment against `canBlock`, throws if a
+  blocker can't legally block what it's assigned to, then resolves.
+- **`canBlock(attackerInfo, blockerInfo)`** — oracle-text-substring keyword checks (`hasKeyword`,
+  shared by all of the below): an attacker with "can't be blocked" is never blockable; otherwise an
+  attacker with flying needs a blocker with flying or reach; anything else can be blocked by
+  anything untapped. Deliberately does not parse conditional/"except by ..." unblockable text —
+  same bounded-scope tradeoff as the rest of `hasKeyword`.
+- **`resolveCombat(blocks)`** — for each attacker: unblocked deals its power straight to the
+  defending player; blocked with trample computes total assigned-blocker toughness, and if attacker
+  power exceeds it, every assigned blocker dies and the excess spills over as life loss to the
+  defending player — otherwise (not enough power to punch through, or no trample) falls back to a
+  simplified "first blocker takes all the attacker's power" resolution rather than modeling real
+  per-blocker lethal-damage-assignment ordering. The attacker itself dies if total blocker power
+  meets or exceeds its toughness, independent of any of the above.
+- **Not modeled**: deathtouch, first strike/double strike, menace, conditional unblockable, and true
+  attacker-controlled lethal-assignment ordering across multiple blockers — all bounded, deliberate
+  simplifications for a casual playtest board, not a rules-accurate engine.
+- **`activateAbility(player, cardId)`** — taps an untapped permanent and logs the activation
+  distinctly from a combat/mana tap (e.g. "X's ability activated (tapped)"). Deliberately does not
+  parse costs or apply effects — whatever the ability actually does still gets applied by hand via
+  the existing general actions (`adjustLife`/`adjustCounter`/`addCard`/`moveCard`), the same way
+  casting a spell already works on this board. A lightweight, explicitly-scoped choice over building
+  real cost/effect parsing, since the board already treats every other spell/ability the same way.
+
+Client-side (`room/[roomId]/+page.svelte`), the block-assignment flow mirrors Arena rather than a
+single dropdown: click one of your own untapped creatures to "arm" it as a blocker (clicking it
+again, or clicking an attacker while it's armed, assigns it), then click the attacking creature
+you're blocking to complete the assignment; clicking an already-assigned blocker again removes it.
+`canBlockClient()` mirrors the server's flying/reach/unblockable legality purely to dim illegal
+targets — the server call in `declareBlockers` remains the sole authority. Orange SVG connector
+lines are drawn between each assigned attacker/blocker pair (computed from live `getBoundingClientRect()`
+positions, redrawn on assignment change and window resize), and the opponent's battlefield renders
+its permanent categories in mirrored order so creatures on both sides sit nearest the shared middle
+of the table rather than in visually inconsistent stacks.
 
 ## Architecture notes worth knowing
 
