@@ -1136,6 +1136,71 @@ server.tool(
   }
 );
 
+// Shared by rate_deck_bracket and deliver_finished_deck so the bracket logic lives in one place.
+async function computeBracketRating(commanderNames, cardNames) {
+  const allNames = Array.from(new Set([...commanderNames, ...cardNames]));
+  const allNamesLower = new Set(allNames.map((n) => n.toLowerCase()));
+
+  const gameChangersFound = GAME_CHANGERS.filter((gc) => allNamesLower.has(gc.toLowerCase()));
+  const mldFound = MASS_LAND_DENIAL_CARDS.filter((c) => allNamesLower.has(c.toLowerCase()));
+  const extraTurnsFound = EXTRA_TURN_CARDS.filter((c) => allNamesLower.has(c.toLowerCase()));
+
+  const rawCombos = await findCombosInDeck(allNames);
+  const combosFound = await classifyComboSpeed(rawCombos);
+  const hasFastCombo = combosFound.some((c) => c.speed === "fast");
+
+  let bracketEstimate;
+  let explanation;
+  const confidenceNotes = [];
+
+  if (gameChangersFound.length > 3 || hasFastCombo || mldFound.length > 0) {
+    const reasons = [];
+    if (gameChangersFound.length > 3) reasons.push(`${gameChangersFound.length} Game Changers (more than bracket 3's limit of 3)`);
+    if (hasFastCombo) reasons.push("a fast (turn-6-or-earlier) infinite combo");
+    if (mldFound.length > 0) reasons.push(`mass land denial (${mldFound.join(", ")})`);
+    bracketEstimate = "Optimized (4) at minimum";
+    explanation = `At least Bracket 4 (Optimized) due to: ${reasons.join("; ")}. Brackets 4-5 place no restrictions on these beyond the banned list.`;
+    confidenceNotes.push(
+      "Distinguishing Optimized (4) from cEDH (5) additionally requires tournament-proven meta " +
+      "consistency and tuning, which no static card list can assess — treat 5 as a possibility " +
+      "only if this deck is genuinely built/tuned against the current competitive meta."
+    );
+  } else if (gameChangersFound.length >= 1 || combosFound.length > 0) {
+    const reasons = [];
+    if (gameChangersFound.length >= 1) reasons.push(`${gameChangersFound.length} Game Changer(s) (within bracket 3's limit of 3)`);
+    if (combosFound.length > 0) reasons.push(`${combosFound.length} combo(s) present, all classified 'slow' (turn 7+)`);
+    bracketEstimate = "Upgraded (3)";
+    explanation = `Bracket 3 (Upgraded): ${reasons.join("; ")}, and no mass land denial.`;
+  } else {
+    bracketEstimate = "Core (2) or below";
+    explanation = "No Game Changers, no fully-assembled combos, and no mass land denial found — clears the bar for Bracket 2 (Core) or lower.";
+    confidenceNotes.push(
+      "Distinguishing Core (2) from Exhibition (1) is explicitly about intent in the official system " +
+      "(house-ruling / self-expression / joke decks vs. baseline precon-level power), not card " +
+      "composition — this tool can't determine that from a card list alone."
+    );
+  }
+
+  if (extraTurnsFound.length > 0) {
+    confidenceNotes.push(
+      `${extraTurnsFound.length} extra-turn card(s) present (${extraTurnsFound.join(", ")}) — bracket rules ` +
+      "care whether these are chained via untap/cost-reduction engines, which is a board-state question " +
+      "this tool can't evaluate from a card list alone."
+    );
+  }
+
+  return {
+    bracket_estimate: bracketEstimate,
+    explanation,
+    confidence_notes: confidenceNotes,
+    game_changers_found: gameChangersFound,
+    mass_land_denial_found: mldFound,
+    extra_turns_found: extraTurnsFound,
+    combos_found: combosFound,
+    data_current_as_of: "2026-02-09 Game Changers update",
+  };
+}
+
 // --- Tool 16: rate_deck_bracket ---
 server.tool(
   "rate_deck_bracket",
@@ -1146,72 +1211,8 @@ server.tool(
   },
   async ({ commander_names, card_names }) => {
     try {
-      const allNames = Array.from(new Set([...commander_names, ...card_names]));
-      const allNamesLower = new Set(allNames.map((n) => n.toLowerCase()));
-
-      const gameChangersFound = GAME_CHANGERS.filter((gc) => allNamesLower.has(gc.toLowerCase()));
-      const mldFound = MASS_LAND_DENIAL_CARDS.filter((c) => allNamesLower.has(c.toLowerCase()));
-      const extraTurnsFound = EXTRA_TURN_CARDS.filter((c) => allNamesLower.has(c.toLowerCase()));
-
-      const rawCombos = await findCombosInDeck(allNames);
-      const combosFound = await classifyComboSpeed(rawCombos);
-      const hasFastCombo = combosFound.some((c) => c.speed === "fast");
-
-      let bracketEstimate;
-      let explanation;
-      const confidenceNotes = [];
-
-      if (gameChangersFound.length > 3 || hasFastCombo || mldFound.length > 0) {
-        const reasons = [];
-        if (gameChangersFound.length > 3) reasons.push(`${gameChangersFound.length} Game Changers (more than bracket 3's limit of 3)`);
-        if (hasFastCombo) reasons.push("a fast (turn-6-or-earlier) infinite combo");
-        if (mldFound.length > 0) reasons.push(`mass land denial (${mldFound.join(", ")})`);
-        bracketEstimate = "Optimized (4) at minimum";
-        explanation = `At least Bracket 4 (Optimized) due to: ${reasons.join("; ")}. Brackets 4-5 place no restrictions on these beyond the banned list.`;
-        confidenceNotes.push(
-          "Distinguishing Optimized (4) from cEDH (5) additionally requires tournament-proven meta " +
-          "consistency and tuning, which no static card list can assess — treat 5 as a possibility " +
-          "only if this deck is genuinely built/tuned against the current competitive meta."
-        );
-      } else if (gameChangersFound.length >= 1 || combosFound.length > 0) {
-        const reasons = [];
-        if (gameChangersFound.length >= 1) reasons.push(`${gameChangersFound.length} Game Changer(s) (within bracket 3's limit of 3)`);
-        if (combosFound.length > 0) reasons.push(`${combosFound.length} combo(s) present, all classified 'slow' (turn 7+)`);
-        bracketEstimate = "Upgraded (3)";
-        explanation = `Bracket 3 (Upgraded): ${reasons.join("; ")}, and no mass land denial.`;
-      } else {
-        bracketEstimate = "Core (2) or below";
-        explanation = "No Game Changers, no fully-assembled combos, and no mass land denial found — clears the bar for Bracket 2 (Core) or lower.";
-        confidenceNotes.push(
-          "Distinguishing Core (2) from Exhibition (1) is explicitly about intent in the official system " +
-          "(house-ruling / self-expression / joke decks vs. baseline precon-level power), not card " +
-          "composition — this tool can't determine that from a card list alone."
-        );
-      }
-
-      if (extraTurnsFound.length > 0) {
-        confidenceNotes.push(
-          `${extraTurnsFound.length} extra-turn card(s) present (${extraTurnsFound.join(", ")}) — bracket rules ` +
-          "care whether these are chained via untap/cost-reduction engines, which is a board-state question " +
-          "this tool can't evaluate from a card list alone."
-        );
-      }
-
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({
-            bracket_estimate: bracketEstimate,
-            explanation,
-            confidence_notes: confidenceNotes,
-            game_changers_found: gameChangersFound,
-            mass_land_denial_found: mldFound,
-            extra_turns_found: extraTurnsFound,
-            combos_found: combosFound,
-            data_current_as_of: "2026-02-09 Game Changers update",
-          }, null, 2),
-        }],
-      };
+      const result = await computeBracketRating(commander_names, card_names);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     } catch (e) {
       return { content: [{ type: "text", text: `Bracket rating failed: ${e.message}` }] };
     }
@@ -1286,6 +1287,53 @@ server.tool(
   }
 );
 
+// Shared by get_deck_price_total and deliver_finished_deck.
+async function computeDeckPriceTotal(cardNames, includeFoil) {
+  const res = await fetch(CARDKINGDOM_PRICELIST_URL, { headers: HEADERS });
+  if (!res.ok) {
+    throw new Error(`Card Kingdom pricelist request failed: ${res.status} ${res.statusText}`);
+  }
+  const body = await res.json();
+  const products = body?.data ?? [];
+
+  // Cheapest non-foil (or foil, if allowed) in-stock price per card name, built once.
+  const priceByName = new Map();
+  for (const p of products) {
+    const isFoil = p.is_foil === true || p.is_foil === "true";
+    if (isFoil && !includeFoil) continue;
+    const qty = Number(p.qty_retail ?? 0);
+    if (qty <= 0) continue;
+    const price = parseFloat(p.price_retail);
+    if (isNaN(price)) continue;
+    const nameLower = (p.name ?? "").toLowerCase();
+    const existing = priceByName.get(nameLower);
+    if (!existing || price < existing) priceByName.set(nameLower, price);
+  }
+
+  const priced = [];
+  const notFound = [];
+  for (const name of cardNames) {
+    const price = priceByName.get(name.trim().toLowerCase());
+    if (price === undefined) {
+      notFound.push(name);
+    } else {
+      priced.push({ name, price_usd: price });
+    }
+  }
+
+  const total = Math.round(priced.reduce((sum, c) => sum + c.price_usd, 0) * 100) / 100;
+
+  return {
+    total_usd: total,
+    cards_priced: priced.length,
+    cards_not_found: notFound.length ? notFound : undefined,
+    note: notFound.length
+      ? `${notFound.length} card(s) not found in Card Kingdom's in-stock pricelist — total_usd is a FLOOR, the real total is at least this much.`
+      : "Every card was found and priced — total_usd should be the full, accurate deck cost.",
+    breakdown: priced.sort((a, b) => b.price_usd - a.price_usd),
+  };
+}
+
 // --- Tool 18: get_deck_price_total ---
 server.tool(
   "get_deck_price_total",
@@ -1295,54 +1343,12 @@ server.tool(
     include_foil: z.boolean().optional().describe("If true, allow foil listings when finding each card's cheapest price. Default false (non-foil only)."),
   },
   async ({ card_names, include_foil }) => {
-    const res = await fetch(CARDKINGDOM_PRICELIST_URL, { headers: HEADERS });
-    if (!res.ok) {
-      return { content: [{ type: "text", text: `Card Kingdom pricelist request failed: ${res.status} ${res.statusText}` }] };
+    try {
+      const result = await computeDeckPriceTotal(card_names, include_foil);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text", text: e.message }] };
     }
-    const body = await res.json();
-    const products = body?.data ?? [];
-
-    // Cheapest non-foil (or foil, if allowed) in-stock price per card name, built once.
-    const priceByName = new Map();
-    for (const p of products) {
-      const isFoil = p.is_foil === true || p.is_foil === "true";
-      if (isFoil && !include_foil) continue;
-      const qty = Number(p.qty_retail ?? 0);
-      if (qty <= 0) continue;
-      const price = parseFloat(p.price_retail);
-      if (isNaN(price)) continue;
-      const nameLower = (p.name ?? "").toLowerCase();
-      const existing = priceByName.get(nameLower);
-      if (!existing || price < existing) priceByName.set(nameLower, price);
-    }
-
-    const priced = [];
-    const notFound = [];
-    for (const name of card_names) {
-      const price = priceByName.get(name.trim().toLowerCase());
-      if (price === undefined) {
-        notFound.push(name);
-      } else {
-        priced.push({ name, price_usd: price });
-      }
-    }
-
-    const total = Math.round(priced.reduce((sum, c) => sum + c.price_usd, 0) * 100) / 100;
-
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify({
-          total_usd: total,
-          cards_priced: priced.length,
-          cards_not_found: notFound.length ? notFound : undefined,
-          note: notFound.length
-            ? `${notFound.length} card(s) not found in Card Kingdom's in-stock pricelist — total_usd is a FLOOR, the real total is at least this much.`
-            : "Every card was found and priced — total_usd should be the full, accurate deck cost.",
-          breakdown: priced.sort((a, b) => b.price_usd - a.price_usd),
-        }, null, 2),
-      }],
-    };
   }
 );
 
@@ -1373,6 +1379,24 @@ server.tool(
   },
   async ({ commander_names, deck_entries }) => {
     try {
+      const result = await computeDeckConsistency(commander_names, deck_entries);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            ...result,
+            issues: result.issues.length ? result.issues : "No issues found — legal, correctly sized, and singleton-clean.",
+          }, null, 2),
+        }],
+      };
+    } catch (e) {
+      return { content: [{ type: "text", text: `Deck consistency check failed: ${e.message}` }] };
+    }
+  }
+);
+
+// Shared by analyze_deck_consistency and deliver_finished_deck.
+async function computeDeckConsistency(commander_names, deck_entries) {
       const uniqueDeckNames = Array.from(new Set(deck_entries.map((e) => e.name)));
       const allIdentifierNames = Array.from(new Set([...commander_names, ...uniqueDeckNames]));
 
@@ -1386,7 +1410,7 @@ server.tool(
           body: JSON.stringify({ identifiers: chunk.map((name) => ({ name })) }),
         }, "collection");
         if (!res.ok) {
-          return { content: [{ type: "text", text: `Scryfall collection request failed: ${res.status} ${res.statusText}` }] };
+          throw new Error(`Scryfall collection request failed: ${res.status} ${res.statusText}`);
         }
         const data = await res.json();
         for (const card of data.data ?? []) {
@@ -1480,30 +1504,170 @@ server.tool(
       }
 
       return {
+        issues,
+        total_cards: totalCards,
+        land_count: landCount,
+        nonland_count: nonlandCount,
+        avg_nonland_cmc: nonlandCount ? Math.round((nonlandCmcTotal / nonlandCount) * 100) / 100 : 0,
+        mana_curve: manaCurve,
+        curve_out_probability: {
+          note: "Simplified model: 7-card opening hand + 1 draw/turn, no mulligans/scry/ramp/card-draw " +
+            "spells modeled. turn_N is the probability of having drawn at least N lands by turn N.",
+          ...curveOutProbability,
+        },
+        duplicate_violations: duplicateViolations,
+        color_identity_violations: colorIdentityViolations,
+        not_commander_legal: notCommanderLegal,
+        not_found: notFound,
+        commander_color_identity: Array.from(commanderColorSet),
+      };
+}
+
+// --- Tool 20: deliver_finished_deck ---
+server.tool(
+  "deliver_finished_deck",
+  "The single required final step for ANY finished Commander decklist — built via build_budget_deck, " +
+  "assembled manually, or fetched via get_moxfield_decklist. Runs the deck through all three " +
+  "deterministic pre-delivery checks (analyze_deck_consistency, rate_deck_bracket, get_deck_price_total) " +
+  "in one call, then — only if the deck comes back structurally clean — creates a playtest table (one " +
+  "human seat, one AI seat, labeled with deck_name), loads this exact decklist into the human seat, and " +
+  "returns a single ready-to-paste final_delivery_text: the decklist block, a fixed-format summary table " +
+  "(Price / Commander + color identity / Bracket Power / Combo list / Wincon(s) / General strategy), and " +
+  "the playtest room_url, in that exact order. This is the one place that final format is defined — paste " +
+  "final_delivery_text to the user as-is rather than re-assembling it by hand. If analyze_deck_consistency " +
+  "finds ANY issue (wrong card count, a singleton violation, an off-color card, something not " +
+  "Commander-legal), this returns those issues instead of a delivery — it deliberately does NOT create a " +
+  "playtest table for a broken deck. Fix the decklist and call this again; only a clean deck produces a " +
+  "final_delivery_text. wincon_summary and general_strategy require actual judgment about the deck (this " +
+  "tool only asserts what a card list mechanically implies, it can't write these for you) — but this " +
+  "response's bracket.combos_found is computed fresh inside this same call and may surface combos you " +
+  "didn't know about when drafting wincon_summary; if the two disagree, rewrite wincon_summary and call " +
+  "this again before showing anything to the user.",
+  {
+    deck_name: z.string().describe("The actual deck's name/theme, e.g. 'Edgar Markov Vampire Tribal' — used as the playtest table's label. Never 'Untitled table'."),
+    decklist_text: z.string().describe("Full decklist as a 'Commander' section then a blank line then a 'Deck' section, one '<qty> <name>' per line — the same format get_moxfield_decklist's decklist_text produces and playtest_load_deck's decklist_text param accepts."),
+    wincon_summary: z.string().describe("How this deck actually wins. If rate_deck_bracket (run inside this call) finds combos, name the piece(s) and a turn-speed estimate; otherwise describe the deck's primary non-combo game plan."),
+    general_strategy: z.string().describe("A short paragraph on how to actually pilot the deck turn to turn."),
+  },
+  async ({ deck_name, decklist_text, wincon_summary, general_strategy }) => {
+    const { commanderNames, deckEntries } = parsePlaytestDecklist(decklist_text);
+    if (!commanderNames.length || !deckEntries.length) {
+      return {
+        content: [{
+          type: "text",
+          text: "Couldn't parse a commander and deck from decklist_text — check the 'Commander' / 'Deck' section headers and '<qty> <name>' line formatting.",
+        }],
+      };
+    }
+
+    const uniqueDeckNames = Array.from(new Set(deckEntries.map((e) => e.name)));
+    const allCopiesNames = [...commanderNames, ...deckEntries.flatMap((e) => Array(e.qty).fill(e.name))];
+
+    let consistency, bracket, price;
+    try {
+      [consistency, bracket, price] = await Promise.all([
+        computeDeckConsistency(commanderNames, deckEntries),
+        computeBracketRating(commanderNames, uniqueDeckNames),
+        computeDeckPriceTotal(allCopiesNames, false),
+      ]);
+    } catch (e) {
+      return { content: [{ type: "text", text: `Pre-delivery checks failed: ${e.message}` }] };
+    }
+
+    if (consistency.issues.length) {
+      return {
         content: [{
           type: "text",
           text: JSON.stringify({
-            issues: issues.length ? issues : "No issues found — legal, correctly sized, and singleton-clean.",
-            total_cards: totalCards,
-            land_count: landCount,
-            nonland_count: nonlandCount,
-            avg_nonland_cmc: nonlandCount ? Math.round((nonlandCmcTotal / nonlandCount) * 100) / 100 : 0,
-            mana_curve: manaCurve,
-            curve_out_probability: {
-              note: "Simplified model: 7-card opening hand + 1 draw/turn, no mulligans/scry/ramp/card-draw " +
-                "spells modeled. turn_N is the probability of having drawn at least N lands by turn N.",
-              ...curveOutProbability,
-            },
-            duplicate_violations: duplicateViolations,
-            color_identity_violations: colorIdentityViolations,
-            not_commander_legal: notCommanderLegal,
-            not_found: notFound,
+            blocked: true,
+            reason: "analyze_deck_consistency found issues — fix the decklist and call deliver_finished_deck again. No playtest table was created.",
+            consistency,
+            bracket,
+            price,
           }, null, 2),
         }],
       };
-    } catch (e) {
-      return { content: [{ type: "text", text: `Deck consistency check failed: ${e.message}` }] };
     }
+
+    let roomId, roomUrl;
+    try {
+      const lobbyRes = await playtestFetch("/api/lobby", {
+        method: "POST",
+        headers: PLAYTEST_JSON_HEADERS,
+        body: JSON.stringify({
+          label: deck_name,
+          seats: [
+            { label: "You", controller: "human" },
+            { label: "AI opponent", controller: "ai" },
+          ],
+        }),
+      });
+      const lobbyData = await lobbyRes.json();
+      if (!lobbyRes.ok || lobbyData.error) {
+        throw new Error(lobbyData.error || lobbyRes.statusText);
+      }
+      roomId = lobbyData.roomId;
+      roomUrl = `${PLAYTEST_BASE}/room/${roomId}`;
+
+      const resolveRes = await playtestFetch("/api/resolve-deck", {
+        method: "POST",
+        headers: PLAYTEST_JSON_HEADERS,
+        body: JSON.stringify({ commanderNames, deckEntries }),
+      });
+      const resolveData = await resolveRes.json();
+      if (!resolveRes.ok || resolveData.error) {
+        throw new Error(resolveData.error || resolveRes.statusText);
+      }
+
+      await withRoom(roomId, {
+        type: "batch",
+        actions: [
+          {
+            type: "loadDeck", player: "seat0", commanderNames, deckEntries,
+            cardInfo: resolveData.cardInfo, sourceLabel: deck_name,
+          },
+          { type: "openingHand", player: "seat0" },
+        ],
+      });
+    } catch (e) {
+      return {
+        content: [{
+          type: "text",
+          text: `Deck passed all checks, but the playtest table couldn't be created: ${e.message}\n\n` +
+            `Checks:\n${JSON.stringify({ consistency, bracket, price }, null, 2)}`,
+        }],
+      };
+    }
+
+    const commanderLabel = `${commanderNames.join(" / ")} (${consistency.commander_color_identity.length ? consistency.commander_color_identity.join("/") : "Colorless"})`;
+    const comboLabel = bracket.combos_found.length
+      ? bracket.combos_found.map((c) => `${c.pieces.join(" + ")} (${c.speed})`).join("; ")
+      : "None";
+
+    const finalDeliveryText =
+      `${decklist_text.trim()}\n\n` +
+      `| | |\n|---|---|\n` +
+      `| **Price** | $${price.total_usd.toFixed(2)} (Card Kingdom) |\n` +
+      `| **Commander** | ${commanderLabel} |\n` +
+      `| **Bracket Power** | ${bracket.bracket_estimate} |\n` +
+      `| **Combo list** | ${comboLabel} |\n` +
+      `| **Wincon(s)** | ${wincon_summary} |\n` +
+      `| **General strategy** | ${general_strategy} |\n\n` +
+      `${roomUrl}`;
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          final_delivery_text: finalDeliveryText,
+          room_id: roomId,
+          room_url: roomUrl,
+          consistency,
+          bracket,
+          price,
+        }, null, 2),
+      }],
+    };
   }
 );
 

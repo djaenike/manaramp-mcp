@@ -4,14 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A local MCP (Model Context Protocol) server, entirely in `index.js` (~1200 lines, ESM, no build step, no
+A local MCP (Model Context Protocol) server, entirely in `index.js` (~1400 lines, ESM, no build step, no
 tests, no lint config). It runs over stdio and is spawned as a subprocess by Claude Desktop / Claude Code.
-It exposes 19 tools: 10 let Claude reason over live Magic: The Gathering data instead of guessing from
+It exposes 20 tools: 10 let Claude reason over live Magic: The Gathering data instead of guessing from
 training data, 5 (`playtest_*`) drive a companion local playtest server, 2 (`rate_deck_bracket`,
 `analyze_deck_consistency`) are deterministic checks — power-level bracket and structural legality/mana
-curve, respectively — against real data instead of an eyeballed guess, and 2 more (`get_moxfield_decklist`,
-`get_deck_price_total`) round out deck import and a whole-decklist price check — see below and
-`extensions/README.md`.
+curve, respectively — against real data instead of an eyeballed guess, 2 more (`get_moxfield_decklist`,
+`get_deck_price_total`) round out deck import and a whole-decklist price check, and 1 (`deliver_finished_deck`)
+composes the bracket/price/consistency checks plus playtest table creation into the single required
+final-delivery step — see below and `extensions/README.md`.
 
 ## Commands
 
@@ -110,11 +111,19 @@ descriptions and error messages:
   403 fallback message (paste decklist text directly instead) rather than chasing a fingerprint-spoofing
   dependency — that would be an arms race against Cloudflare's bot detection, not a stable fix.
 
-`build_budget_deck` is the composite tool: it pulls a commander's full EDHREC card pool, cross-references
+`build_budget_deck` is a composite tool: it pulls a commander's full EDHREC card pool, cross-references
 every candidate against Card Kingdom's full pricelist, and greedily fills 99 slots by synergy-per-dollar
 under a budget. It fetches CK's entire pricelist on every call (same slow path as `get_cardkingdom_price`)
 and is explicitly a synergy-per-dollar optimizer, not a power-level/bracket classifier or combo-aware
 deckbuilder — it doesn't check curve, color balance, or land count.
+
+`deliver_finished_deck` is the other composite tool, and the newest one: it's not an independent data
+source but glue over five other tools' logic (bracket, price, consistency, and playtest table
+creation/deck loading), see "Deck-building final deliverable" below for its contract. Its handler is the
+one place in this file where a tool calls `Promise.all` across independently-throwing async functions
+(`computeDeckConsistency`/`computeBracketRating`/`computeDeckPriceTotal`) rather than one `fetch` — each
+was refactored out of its own standalone tool specifically so this composite could call the same logic
+without duplicating it or invoking the standalone tools over MCP from within a tool handler.
 
 Two name-normalization helpers are shared across tools and are a common source of lookup failures:
 - `slugify()` — EDHREC's URL slug format (lowercase, hyphens, punctuation stripped)
@@ -135,42 +144,44 @@ enough to validate directly rather than leaving it as a free-form string.
 ## Deck-building final deliverable
 
 Whenever a conversation in this repo lands on a finished decklist — built via `build_budget_deck`,
-assembled manually, or fetched via `get_moxfield_decklist` — treat the job as unfinished until all
-three of these are delivered, in this exact order, every time. This is a fixed format (the user's own
-spec, not left to per-conversation improvisation) so delivery stays consistent:
+assembled manually, or fetched via `get_moxfield_decklist` — treat the job as unfinished until
+`deliver_finished_deck` has been called and its `final_delivery_text` has been pasted to the user
+verbatim. This tool exists specifically so the final format is defined once, in code, instead of being
+re-assembled by hand (and potentially reformatted inconsistently) at the end of every conversation.
 
-1. **The decklist as one ready-to-paste block** — `Commander` / blank line / `Deck` text (the same
-   format `get_moxfield_decklist`'s `decklist_text` produces and `playtest_load_deck`'s
-   `decklist_text` param parses), shown to the user verbatim. This format is directly compatible with
-   both `playtest_load_deck` and Moxfield's own importer — no reformatting needed for either.
+Call it with `decklist_text` (the `Commander` / blank line / `Deck` block — same format
+`get_moxfield_decklist`'s `decklist_text` produces and `playtest_load_deck` parses), `deck_name`, and two
+fields that require actual judgment about the deck and so are NOT computed by the tool itself:
+- `wincon_summary` — combo-based if the deck has one (name the pieces + a turn-speed estimate, e.g.
+  "Dramatic Reversal + Isochron Scepter, achievable turn 6 or earlier"), otherwise the deck's primary
+  non-combo game plan.
+- `general_strategy` — a short paragraph on how to actually pilot the deck turn to turn.
 
-2. **A clean summary table, in this exact order and nothing else**:
-   - **Price** — `get_deck_price_total`'s `total_usd` (Card Kingdom-standardized).
-   - **Commander** — name(s) plus color identity (e.g. "Edgar Markov — Mardu (B/R/W)").
-   - **Bracket Power** — `rate_deck_bracket`'s `bracket_estimate`.
-   - **Combo list** — `rate_deck_bracket`'s `combos_found`, piece names only.
-   - **Wincon(s)** — combo-based if `combos_found` isn't empty, otherwise the deck's primary
-     non-combo game plan (this is where a combo's turn-speed estimate belongs too, e.g. "Dramatic
-     Reversal + Isochron Scepter, achievable turn 6 or earlier").
-   - **General strategy** — a short paragraph on how to actually pilot the deck turn to turn.
+Internally, `deliver_finished_deck` runs `analyze_deck_consistency`, `rate_deck_bracket`, and
+`get_deck_price_total` **unconditionally**, every time — not just "if a budget was mentioned" — via
+shared `computeDeckConsistency`/`computeBracketRating`/`computeDeckPriceTotal` functions extracted so
+the three standalone tools and this composite one never run divergent logic. If consistency comes back
+with any issue (wrong card count, a singleton violation, an off-color card, something not
+Commander-legal), the tool returns those issues instead of a delivery and deliberately does **not**
+create a playtest table for a broken deck — fix the decklist and call it again. Only when the deck is
+clean does it create the table (`playtest_create_table` with one human seat, one AI seat, labeled with
+`deck_name`, never "Untitled table" — the AI seat auto-gets its own random EDHREC opponent deck and
+opening hand) and load the built decklist into the human seat (`playtest_load_deck`'s same
+resolve-deck + loadDeck + openingHand sequence), then assembles `final_delivery_text` in the fixed
+order: decklist block, then a summary table (Price / Commander + color identity / Bracket Power / Combo
+list / Wincon(s) / General strategy), then the `room_url`. `bracket.combos_found` in the response is
+computed fresh inside this same call, so it may reveal a combo that wasn't accounted for when
+`wincon_summary` was drafted — if the two disagree, rewrite `wincon_summary` and call again before
+showing anything to the user, per the tool's own description.
 
-   `rate_deck_bracket`, `get_deck_price_total`, and `analyze_deck_consistency` are still all called
-   **unconditionally** every time as pre-delivery checks — not just "if a budget was mentioned" — and
-   re-checked after *every* manual swap, not once at the start. This is a real, previously-hit failure
-   mode: a decklist that started at $75 drifted to $135 after manual swaps because nothing
-   re-verified the total after the last edit; a swap can just as easily break singleton or color
-   identity. `analyze_deck_consistency`'s result is deliberately **not** its own table row, though —
-   if it comes back clean, say nothing about it; if it finds something (wrong card count, a
-   singleton violation, an off-color card, something not Commander-legal), fix it before delivering
-   and briefly note what got corrected, rather than cluttering the table with a routine status line.
-
-3. **A real playtest link** — `playtest_create_table` with exactly one human seat and one AI seat,
-   labeled with the actual deck name (never "Untitled table"). Because the table includes an AI
-   seat, this auto-populates the AI seat with its own random EDHREC opponent deck and opening hand;
-   follow it with `playtest_load_deck` for the human seat, loading the deck just built. Deliver just
-   the resulting `room_url` — one click and the user is in a live game, both sides already dealt in.
-   Do not explain how to use the playtest table itself (no walkthrough of controls or UI) — it's
-   meant to be self-explanatory, and instructional text just adds clutter here.
+Because this is the *final* gate, not the only check: still call `rate_deck_bracket` /
+`get_deck_price_total` / `analyze_deck_consistency` individually (or just re-run
+`deliver_finished_deck`) after any manual swap made *during* building, not only once at the very end —
+this is a real, previously-hit failure mode: a decklist that started at $75 drifted to $135 after manual
+swaps because nothing re-verified the total after the last edit, and a swap can just as easily break
+singleton or color identity. Don't explain how to use the playtest table itself (no walkthrough of
+controls or UI) in the final message — it's meant to be self-explanatory, and instructional text just
+adds clutter here.
 
 (Future, not for this pass: a paywall gate in front of the playtest link for non-paying users —
 noted here as context for later planning, nothing to build against yet.)

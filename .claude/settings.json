@@ -40,7 +40,13 @@
       "Bash(curl -s http://127.0.0.1:4173/api/lobby)",
       "Bash(npx tsc *)",
       "Bash(taskkill //F //PID 26152 //PID 56244 //PID 17184)",
-      "Bash(curl -s -X POST http://127.0.0.1:4173/api/lobby -H \"Content-Type: application/json\" -d '{\"label\":\"Combat test 3\",\"seats\":[{\"label\":\"You\",\"controller\":\"human\"},{\"label\":\"Opponent\",\"controller\":\"human\"}]}')"
+      "Bash(curl -s -X POST http://127.0.0.1:4173/api/lobby -H \"Content-Type: application/json\" -d '{\"label\":\"Combat test 3\",\"seats\":[{\"label\":\"You\",\"controller\":\"human\"},{\"label\":\"Opponent\",\"controller\":\"human\"}]}')",
+      "Bash(npm run preview)",
+      "Bash(npx svelte-check *)",
+      "Bash(npm view *)",
+      "mcp__claude_ai_Microsoft_365__sharepoint_search",
+      "mcp__claude_ai_Microsoft_365__read_resource",
+      "mcp__claude_ai_Microsoft_365__sharepoint_folder_search"
     ]
   }
 }
