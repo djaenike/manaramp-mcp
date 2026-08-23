@@ -1619,14 +1619,27 @@ server.tool(
         throw new Error(resolveData.error || resolveRes.statusText);
       }
 
+      // Confirmed via live testing against the deployed worker: a room's seat ids can silently
+      // revert from the requested seat0/seat1 to the hardcoded "you"/"ai" defaults a few seconds
+      // after creation (once every socket disconnects) — a server-side bug in the playtest-table
+      // Durable Object, not this tool. Re-fetching the CURRENT seat list right before loading the
+      // deck (instead of assuming "seat0", the id /api/lobby returned moments earlier) makes this
+      // call resilient to that drift regardless of its root cause.
+      const { state: liveState } = await withRoom(roomId, null);
+      const humanSeat = liveState.seats?.find((s) => s.controller === "human");
+      if (!humanSeat) {
+        throw new Error(`No human seat found on room ${roomId} — seats: ${JSON.stringify(liveState.seats)}`);
+      }
+      const humanSeatId = humanSeat.id;
+
       await withRoom(roomId, {
         type: "batch",
         actions: [
           {
-            type: "loadDeck", player: "seat0", commanderNames, deckEntries,
+            type: "loadDeck", player: humanSeatId, commanderNames, deckEntries,
             cardInfo: resolveData.cardInfo, sourceLabel: deck_name,
           },
-          { type: "openingHand", player: "seat0" },
+          { type: "openingHand", player: humanSeatId },
         ],
       });
     } catch (e) {
