@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<!--
+  BOILERPLATE / STRUCTURAL REFERENCE ONLY.
+
+  This file is NOT served by the MCP -- MCP tools return data, not artifacts (see
+  conversation). This lives in sub-tools/delivery/ purely as a reference for how Claude
+  should build the actual HTML artifact each time a deck is delivered: same layout,
+  same token system, same interaction pattern, populated with that call's real JSON
+  (matching sub-tools/delivery/deck_report_template.json).
+
+  To use: replace the DECK_DATA object at the bottom of the <script> with the actual
+  JSON the MCP tools returned, matching deck_report_template.json's shape exactly.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Deck Report</title>
+<style>
+  :root {
+    --bg: #1E1A16;
+    --surface: #262019;
+    --surface-raised: #2D2620;
+    --rule: #423A2F;
+    --ink: #EDE6D9;
+    --ink-muted: #A79A87;
+    --brass: #C0923F;
+    --brass-dim: #8C6A2E;
+    --draw: #6E96AE;
+    --removal: #B25B4E;
+    --good: #7E9B6E;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.55;
+  }
+
+  .report {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 48px 24px 80px;
+  }
+
+  h1, h2 {
+    font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  header.deck-header {
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 28px;
+    margin-bottom: 32px;
+  }
+
+  header.deck-header h1 {
+    font-size: 2.1rem;
+    color: var(--ink);
+  }
+
+  header.deck-header p.scope {
+    margin: 10px 0 0;
+    color: var(--ink-muted);
+    font-size: 0.98rem;
+    max-width: 60ch;
+  }
+
+  .meta-line {
+    margin-top: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 22px;
+    font-size: 0.92rem;
+    color: var(--ink-muted);
+  }
+  .meta-line span b { color: var(--brass); font-weight: 600; }
+
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    margin: 32px 0;
+  }
+  .stat {
+    padding: 16px 14px;
+    border-right: 1px solid var(--rule);
+  }
+  .stat:last-child { border-right: none; }
+  .stat .value { font-size: 1.5rem; font-weight: 600; color: var(--ink); }
+  .stat .label { font-size: 0.82rem; color: var(--ink-muted); margin-top: 2px; }
+  .stat.draw .value { color: var(--draw); }
+  .stat.removal .value { color: var(--removal); }
+
+  section { margin: 36px 0; }
+  section h2 { font-size: 1.25rem; margin-bottom: 12px; }
+  section p { color: var(--ink); max-width: 68ch; }
+
+  .wincons { padding-left: 20px; margin: 8px 0 0; }
+  .wincons li { margin-bottom: 4px; }
+
+  .combo-card {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 12px 16px;
+    margin-bottom: 10px;
+  }
+  .combo-card .pieces { font-weight: 600; }
+  .combo-card .speed {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 0.82rem;
+    color: var(--ink-muted);
+  }
+
+  .issue-banner {
+    background: rgba(178, 91, 78, 0.12);
+    border: 1px solid var(--removal);
+    border-radius: 4px;
+    padding: 14px 16px;
+    margin-bottom: 20px;
+  }
+  .issue-banner h2 { color: var(--removal); font-size: 1.05rem; margin-bottom: 6px; }
+  .issue-banner ul { margin: 0; padding-left: 20px; }
+
+  .category-group { margin-bottom: 22px; }
+  .category-group h3 {
+    font-size: 0.85rem;
+    color: var(--ink-muted);
+    font-weight: 600;
+    margin: 0 0 6px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  details.card-row {
+    border-bottom: 1px solid var(--rule);
+  }
+  details.card-row summary {
+    cursor: pointer;
+    padding: 9px 4px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    list-style: none;
+    font-size: 0.95rem;
+  }
+  details.card-row summary::-webkit-details-marker { display: none; }
+  details.card-row summary .name { color: var(--ink); }
+  details.card-row summary .price { color: var(--ink-muted); font-size: 0.88rem; }
+  details.card-row[open] summary .name { color: var(--brass); }
+
+  .card-expand {
+    display: flex;
+    gap: 16px;
+    padding: 4px 4px 16px;
+  }
+  .card-expand img {
+    width: 146px;
+    border-radius: 6px;
+    flex-shrink: 0;
+  }
+  .card-expand .text {
+    font-size: 0.9rem;
+    color: var(--ink-muted);
+  }
+  .card-expand .text .mana { color: var(--ink); margin-bottom: 6px; }
+
+  .copy-box-wrap { position: relative; }
+  .copy-box {
+    height: 220px;
+    overflow-y: auto;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 14px 16px;
+    font-family: "SF Mono", Consolas, Menlo, monospace;
+    font-size: 0.85rem;
+    color: var(--ink);
+    white-space: pre-wrap;
+  }
+  .copy-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: var(--brass-dim);
+    color: var(--ink);
+    border: none;
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-size: 0.82rem;
+    cursor: pointer;
+  }
+  .copy-btn:hover { background: var(--brass); }
+  .copy-btn:focus-visible, details.card-row summary:focus-visible {
+    outline: 2px solid var(--brass);
+    outline-offset: 2px;
+  }
+
+  .other-info { color: var(--ink-muted); font-size: 0.9rem; }
+
+  @media (max-width: 520px) {
+    .card-expand { flex-direction: column; }
+    .card-expand img { width: 100%; max-width: 220px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="report" id="report-root"></div>
+
+<template id="stat-template">
+  <div class="stat">
+    <div class="value"></div>
+    <div class="label"></div>
+  </div>
+</template>
+
+<template id="combo-template">
+  <div class="combo-card">
+    <div class="pieces"></div>
+    <div class="speed"></div>
+  </div>
+</template>
+
+<template id="card-row-template">
+  <details class="card-row">
+    <summary>
+      <span class="name"></span>
+      <span class="price"></span>
+    </summary>
+    <div class="card-expand">
+      <img alt="">
+      <div class="text">
+        <div class="mana"></div>
+        <div class="oracle"></div>
+      </div>
+    </div>
+  </details>
+</template>
+
+<script>
+/**
+ * Populates #report-root from a deckData object matching deck_report_template.json.
+ * Replace DECK_DATA below with the MCP tool's actual returned JSON for each real
+ * delivery -- this function is the reusable, consistent part.
+ */
+function renderDeckReport(deckData) {
+  const scope = deckData.userDefinedScope || {};
+  const out = deckData.actualOutput || {};
+  const root = document.getElementById("report-root");
+  root.innerHTML = "";
+
+  // Issue banner (only if the deck failed consistency checks)
+  if (out.consistencyIssues && out.consistencyIssues.length) {
+    const banner = document.createElement("div");
+    banner.className = "issue-banner";
+    banner.innerHTML = `<h2>This deck needs fixes before it's tournament-ready</h2>
+      <ul>${out.consistencyIssues.map(i => `<li>${escapeHtml(i)}</li>`).join("")}</ul>`;
+    root.appendChild(banner);
+  }
+
+  // Header
+  const header = document.createElement("header");
+  header.className = "deck-header";
+  header.innerHTML = `
+    <h1>${escapeHtml(out.commander || "Unnamed Commander")}</h1>
+    <p class="scope">${escapeHtml(scope.deckDesignPreference || "")}</p>
+    <div class="meta-line">
+      <span>Format: <b>${escapeHtml(scope.deckType || "—")}</b></span>
+      <span>Bracket: <b>${escapeHtml(out.bracket || "—")}</b></span>
+      <span>Price: <b>$${out.priceUsd != null ? out.priceUsd.toFixed(2) : "—"}</b></span>
+    </div>`;
+  root.appendChild(header);
+
+  // Stat row
+  const statDefs = [
+    ["numberOfLands", "Lands"],
+    ["numberOfManaRocks", "Mana rocks"],
+    ["numberOfCreatures", "Creatures"],
+    ["numberOfInstants", "Instants"],
+    ["numberOfSorceries", "Sorceries"],
+    ["numberOfEnchantments", "Enchantments"],
+    ["numberOfArtifacts", "Artifacts"],
+    ["cardDrawCount", "Card draw"],
+    ["removalCount", "Removal"],
+  ];
+  const statRow = document.createElement("div");
+  statRow.className = "stat-row";
+  for (const [key, label] of statDefs) {
+    const tpl = document.getElementById("stat-template").content.cloneNode(true);
+    const statEl = tpl.querySelector(".stat");
+    if (key === "cardDrawCount") statEl.classList.add("draw");
+    if (key === "removalCount") statEl.classList.add("removal");
+    tpl.querySelector(".value").textContent = out[key] ?? "—";
+    tpl.querySelector(".label").textContent = label;
+    statRow.appendChild(tpl);
+  }
+  root.appendChild(statRow);
+
+  // Strategy + wincons
+  if (out.strategy || (out.wincons && out.wincons.length)) {
+    const s = document.createElement("section");
+    s.innerHTML = `<h2>Strategy</h2><p>${escapeHtml(out.strategy || "")}</p>` +
+      (out.wincons && out.wincons.length
+        ? `<ul class="wincons">${out.wincons.map(w => `<li>${escapeHtml(w)}</li>`).join("")}</ul>`
+        : "");
+    root.appendChild(s);
+  }
+
+  // Combos
+  if (out.combos && out.combos.length) {
+    const s = document.createElement("section");
+    s.innerHTML = "<h2>Combos</h2>";
+    for (const combo of out.combos) {
+      const tpl = document.getElementById("combo-template").content.cloneNode(true);
+      tpl.querySelector(".pieces").textContent = (combo.pieces || []).join(" + ");
+      tpl.querySelector(".speed").textContent = combo.speed === "fast" ? "Fast combo" : "Slow combo";
+      s.appendChild(tpl);
+    }
+    root.appendChild(s);
+  }
+
+  // Full decklist, grouped by category, expandable per card
+  if (out.fullDeckList && out.fullDeckList.length) {
+    const s = document.createElement("section");
+    s.innerHTML = "<h2>Full decklist</h2>";
+    const byCategory = {};
+    for (const card of out.fullDeckList) {
+      const cat = card.category || "Other";
+      (byCategory[cat] = byCategory[cat] || []).push(card);
+    }
+    for (const [cat, cards] of Object.entries(byCategory)) {
+      const group = document.createElement("div");
+      group.className = "category-group";
+      group.innerHTML = `<h3>${escapeHtml(cat)} (${cards.length})</h3>`;
+      for (const card of cards) {
+        const tpl = document.getElementById("card-row-template").content.cloneNode(true);
+        tpl.querySelector(".name").textContent = `${card.quantity || 1}\u00d7 ${card.name}`;
+        tpl.querySelector(".price").textContent = card.priceUsd != null ? `$${card.priceUsd.toFixed(2)}` : "";
+        const img = tpl.querySelector("img");
+        if (card.imageUrl) { img.src = card.imageUrl; img.alt = card.name; } else { img.remove(); }
+        tpl.querySelector(".mana").textContent = card.manaCost || "";
+        tpl.querySelector(".oracle").textContent = card.oracleText || card.typeLine || "";
+        group.appendChild(tpl);
+      }
+      s.appendChild(group);
+    }
+    root.appendChild(s);
+  }
+
+  // Moxfield import box
+  if (out.moxfieldImport) {
+    const s = document.createElement("section");
+    s.innerHTML = "<h2>Moxfield import</h2>";
+    const wrap = document.createElement("div");
+    wrap.className = "copy-box-wrap";
+    wrap.innerHTML = `<div class="copy-box">${escapeHtml(out.moxfieldImport)}</div>
+      <button class="copy-btn" type="button">Copy</button>`;
+    wrap.querySelector(".copy-btn").addEventListener("click", (e) => {
+      navigator.clipboard.writeText(out.moxfieldImport);
+      e.target.textContent = "Copied";
+      setTimeout(() => { e.target.textContent = "Copy"; }, 1500);
+    });
+    s.appendChild(wrap);
+    root.appendChild(s);
+  }
+
+  // Other relevant info
+  if (out.otherRelevantInfo) {
+    const s = document.createElement("section");
+    s.innerHTML = `<h2>Notes</h2><p class="other-info">${escapeHtml(out.otherRelevantInfo)}</p>`;
+    root.appendChild(s);
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = String(str);
+  return div.innerHTML;
+}
+
+// --- Replace this with the real tool output for each actual delivery ---
+const DECK_DATA = {
+  userDefinedScope: {
+    deckDesignPreference: "Example: aggressive go-wide vampire tribal with lifegain payoffs",
+    deckType: "commander",
+    priceLimitUsd: 150,
+    bracketLevel: "Bracket 3",
+    userColorPreference: ["W", "B"],
+    userCommanderPreference: null
+  },
+  actualOutput: {
+    commander: "Edgar Markov",
+    priceUsd: 142.50,
+    bracket: "Upgraded (3)",
+    combos: [],
+    strategy: "Flood the board with vampires early, use Edgar Markov's eminence trigger to generate value from every vampire cast, then close with combat damage backed by anthem effects.",
+    wincons: ["Wide vampire combat damage", "Anthem-fueled alpha strike"],
+    fullDeckList: [],
+    moxfieldImport: "Commander\n1 Edgar Markov\n\nDeck\n1 Sol Ring\n...",
+    numberOfLands: 37,
+    numberOfManaRocks: 6,
+    numberOfInstants: 8,
+    numberOfSorceries: 6,
+    numberOfEnchantments: 4,
+    numberOfArtifacts: 9,
+    numberOfCreatures: 33,
+    numberOfPlaneswalkers: 0,
+    cardDrawCount: 9,
+    removalCount: 10,
+    consistencyIssues: [],
+    bracketLevelMatchesRequest: true,
+    otherRelevantInfo: null
+  }
+};
+
+renderDeckReport(DECK_DATA);
+</script>
+
+</body>
+</html>
