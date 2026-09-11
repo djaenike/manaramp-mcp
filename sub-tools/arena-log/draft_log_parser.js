@@ -5,11 +5,19 @@
  * stream from match/GRE data (see gre_match_parser.js), using different marker
  * strings entirely.
  *
- * Marker strings and payload shapes below are validated against the real,
- * shipped implementation in bstaple1/MTGA_Draft_17Lands (MIT licensed,
- * src/log_scanner.py) -- not guessed or reconstructed from docs. Reused here
- * as plain factual identifiers (event names, JSON key names), reimplemented
- * from scratch in JS with our own parsing/state logic.
+ * PICK marker strings and payload shapes below were corrected by reading two
+ * independently-maintained, currently-active real parsers directly (not
+ * secondhand docs): 17Lands' own official log client
+ * (rconroy293/mtga-log-client, src/python/seventeenlands/mtga_follower.py)
+ * and manasight-parser (manasight/manasight-parser,
+ * src/parsers/draft/{human,bot}.rs, MIT/Apache-2.0, with its own test
+ * fixtures against real log text). An earlier revision of this file, based on
+ * an older/archived community tool, had the Premier/Traditional pick event
+ * name and field shape simply wrong (it would never match a real log line),
+ * and the Quick Draft pick parser had an extra incorrect JSON-unwrap step
+ * plus a singular-vs-array field name mismatch -- both would have left
+ * `pickedCards` permanently empty against a real draft. PACK parsing (this
+ * file's other half) was not touched -- no evidence surfaced that it's wrong.
  *
  * Confirmed format-specific quirks baked in below:
  *   - Premier/Traditional draft's FIRST pick (P1P1) is never sent via the
@@ -19,6 +27,21 @@
  *     as a COMMA-SEPARATED STRING ("PackCards"), while P1P1's payload
  *     ("CardsInPack") and Quick Draft's payload both use a real JSON array.
  *     Don't assume one shape across formats.
+ *   - Premier/Traditional draft's human PICK event is `EventPlayerDraftMakePick`
+ *     (NOT `Draft.MakeHumanDraftPick`, which does not appear in real logs).
+ *     Its payload shape has been observed to vary: the pick fields
+ *     (card id, pack/pick number) can sit at the top level, nested under a
+ *     `PickInfo` key, or string-escaped inside a `request` field -- check all
+ *     three rather than assuming one. The card id itself may be `CardId`
+ *     (singular) or the first entry of a `GrpIds`/`CardIds` array.
+ *   - Quick Draft's PICK event name appears in real logs as either
+ *     `BotDraftDraftPick` or `BotDraft_DraftPick` (17Lands' own client
+ *     explicitly checks both forms "to handle different Arena log formats" --
+ *     don't anchor on just one). Its `request` field parses directly to
+ *     `{ EventName, PickInfo }` -- there is NO extra `.Payload` layer on the
+ *     pick-request side (unlike the pack-status side, which does have one).
+ *     `PickInfo.CardIds` is an array; a first entry of `0` is a "no card
+ *     resolved yet" sentinel, not a real pick -- skip it.
  *   - Quick Draft pack/pick numbers are 0-indexed in the raw payload; add 1
  *     before treating them as human-facing pack/pick numbers.
  *   - Quick Draft's pack marker fires on every state poll, not just when a
@@ -27,8 +50,8 @@
  *
  * NOT yet implemented: Traditional Draft and Sealed formats use their own
  * separate marker strings again (traditional shares some shape with premier
- * but is a distinct code path in the reference tool). Left as a TODO rather
- * than guessed at.
+ * but is a distinct code path in the reference tools above). Left as a TODO
+ * rather than guessed at.
  */
 
 const DRAFT_START_MARKERS = {
@@ -38,10 +61,15 @@ const DRAFT_START_MARKERS = {
 
 const PREMIER_PACK_MARKER = '[UnityCrossThreadLogger]Draft.Notify ';
 const PREMIER_P1P1_MARKER = 'CardsInPack';
-const PREMIER_PICK_MARKER = '[UnityCrossThreadLogger]==> Draft.MakeHumanDraftPick ';
+const HUMAN_PICK_EVENT = 'EventPlayerDraftMakePick';
 
 const QUICK_PACK_MARKER = 'DraftPack';
-const QUICK_PICK_MARKER = '[UnityCrossThreadLogger]==> BotDraft_DraftPick ';
+// Real logs have been observed using either form; match both rather than picking one.
+const QUICK_PICK_EVENT_FORMS = ['BotDraftDraftPick', 'BotDraft_DraftPick'];
+
+function lineHasQuickPickEvent(line) {
+  return QUICK_PICK_EVENT_FORMS.some((form) => line.includes(form));
+}
 
 function safeJsonAfter(line, anchor) {
   const idx = line.indexOf(anchor);
@@ -122,20 +150,33 @@ function parsePremierPack(line) {
 }
 
 /**
- * Parses Premier Draft's human pick confirmation.
+ * Parses Premier/Traditional Draft's human pick confirmation
+ * (`EventPlayerDraftMakePick`). Only the `==>` request carries useful data --
+ * the paired `<==` response only confirms success. The pick fields
+ * themselves have been observed in three different shapes across real logs
+ * (top-level, under `PickInfo`, or string-escaped inside `request`), so all
+ * three are checked rather than assuming one.
  */
-function parsePremierPick(line) {
-  const data = safeJsonAfter(line, PREMIER_PICK_MARKER.slice(0, 0)) || null;
-  const idx = line.indexOf(PREMIER_PICK_MARKER);
-  if (idx === -1) return null;
+function parseHumanDraftPick(line) {
+  if (!line.includes('==>')) return null; // exclude the bare `<==` response
+  const data = safeJsonAfter(line, '{"id"') || safeJsonAfter(line, '{');
+  if (!data) return null;
   try {
-    const data2 = JSON.parse(line.slice(idx + PREMIER_PICK_MARKER.length));
-    const request = JSON.parse(data2.request);
-    const params = request.params;
+    let requestPayload = null;
+    if (typeof data.request === 'string') {
+      try { requestPayload = JSON.parse(data.request); } catch { requestPayload = null; }
+    }
+    const pickInfo = data.PickInfo ?? requestPayload ?? data;
+
+    let cardId = pickInfo.CardId;
+    if (cardId == null && Array.isArray(pickInfo.GrpIds)) cardId = pickInfo.GrpIds[0];
+    if (cardId == null && Array.isArray(pickInfo.CardIds)) cardId = pickInfo.CardIds[0];
+    if (cardId == null) return null;
+
     return {
-      packNumber: params.packNumber,
-      pickNumber: params.pickNumber,
-      cardId: String(params.cardId),
+      packNumber: pickInfo.PackNumber ?? pickInfo.Pack ?? 0,
+      pickNumber: pickInfo.PickNumber ?? pickInfo.Pick ?? 0,
+      cardId: String(cardId),
     };
   } catch {
     return null;
@@ -164,20 +205,27 @@ function parseQuickPack(line) {
 }
 
 /**
- * Parses Quick Draft's pick confirmation.
+ * Parses Quick Draft's pick confirmation (the `==>` request side only -- the
+ * paired `<==` response confirms success plus the next pack, not the pick
+ * itself). `request` parses directly to `{ EventName, PickInfo }`, with NO
+ * `.Payload` wrapper (that only exists on the pack-status side).
  */
 function parseQuickPick(line) {
-  const idx = line.indexOf(QUICK_PICK_MARKER);
-  if (idx === -1) return null;
+  if (!line.includes('==>')) return null;
+  const data = safeJsonAfter(line, '{"id"') || safeJsonAfter(line, '{');
+  if (!data || typeof data.request !== 'string') return null;
   try {
-    const data = JSON.parse(line.slice(idx + QUICK_PICK_MARKER.length));
     const request = JSON.parse(data.request);
-    const payload = JSON.parse(request.Payload);
-    const pickInfo = payload.PickInfo;
+    const pickInfo = request.PickInfo;
+    if (!pickInfo || !Array.isArray(pickInfo.CardIds)) return null;
+
+    const cardId = pickInfo.CardIds[0];
+    if (cardId == null || String(cardId) === '0') return null; // "0" = no card resolved yet
+
     return {
-      packNumber: pickInfo.PackNumber + 1,
-      pickNumber: pickInfo.PickNumber + 1,
-      cardId: String(pickInfo.CardId),
+      packNumber: (pickInfo.PackNumber ?? 0) + 1,
+      pickNumber: (pickInfo.PickNumber ?? 0) + 1,
+      cardId: String(cardId),
     };
   } catch {
     return null;
@@ -253,8 +301,8 @@ class DraftScanner {
         }
       }
 
-      if (line.includes(PREMIER_PICK_MARKER)) {
-        const pick = parsePremierPick(line);
+      if (line.includes(HUMAN_PICK_EVENT)) {
+        const pick = parseHumanDraftPick(line);
         if (pick) {
           this.pickedCards.push(pick.cardId);
           events.push({ kind: 'pickMade', ...pick });
@@ -273,7 +321,7 @@ class DraftScanner {
         }
       }
 
-      if (line.includes(QUICK_PICK_MARKER)) {
+      if (lineHasQuickPickEvent(line)) {
         const pick = parseQuickPick(line);
         if (pick) {
           this.pickedCards.push(pick.cardId);
@@ -303,7 +351,7 @@ export {
   detectDraftStart,
   parsePremierP1P1,
   parsePremierPack,
-  parsePremierPick,
+  parseHumanDraftPick,
   parseQuickPack,
   parseQuickPick,
 };

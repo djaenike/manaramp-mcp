@@ -141,9 +141,24 @@ that's the only place this information reaches the model.
   `gre_match_parser.js` only reports ANNOTATED, CONFIRMED events — an `ActionsAvailableReq` listing a
   legal option is never reported as something that happened, only an actual
   `ZoneTransfer`/`ObjectsSelected`/damage annotation is. Arena's own log records the human's actual
-  pick confirmation the moment it happens in-client (`DraftScanner`'s `pickedCards`, populated from
-  `Draft.MakeHumanDraftPick`/`BotDraft_DraftPick` lines) — no separate "tell Claude what you picked"
-  step is needed. `arena_draft_assistance`'s handler in `index.js` resolves `pickedCards` through the
+  pick confirmation the moment it happens in-client (`DraftScanner`'s `pickedCards`, populated by
+  `parseHumanDraftPick`/`parseQuickPick`) — no separate "tell Claude what you picked" step is needed.
+  **The pick-detection event names/shapes were wrong until they were corrected by reading two real,
+  currently-maintained parsers directly** (not secondhand docs): 17Lands' own official client
+  (`rconroy293/mtga-log-client`) and `manasight/manasight-parser` (which ships its own test fixtures
+  against real log text). The earlier version, based on an archived community tool, listened for
+  `Draft.MakeHumanDraftPick`/`request.params.{packNumber,pickNumber,cardId}` for Premier/Traditional
+  picks — that event name doesn't exist in real logs; the real one is `EventPlayerDraftMakePick`,
+  whose payload has been observed in three different shapes (top-level, under `PickInfo`, or
+  string-escaped inside `request`), so `parseHumanDraftPick` checks all three. Quick Draft's picker
+  had two separate bugs: an extra incorrect `.Payload` unwrap step (the pick-request side has no such
+  wrapper, unlike the pack-status side, which does), and read a singular `CardId` when the real field
+  is a `CardIds` array (whose first entry can legitimately be `0`, a "not resolved yet" sentinel to
+  skip, not a real pick). The marker itself also now matches both `BotDraftDraftPick` and
+  `BotDraft_DraftPick` — 17Lands' own client explicitly checks both forms since real logs have used
+  either. See `tests/test_draft_pick_parsing.mjs` for fixtures built directly from those two
+  reference parsers' own shapes. PACK parsing was not touched — no evidence surfaced that it's wrong.
+  `arena_draft_assistance`'s handler in `index.js` resolves `pickedCards` through the
   same `resolveGrpIds` call as `currentPack` (one combined batch, since `resolveGrpIds` dedupes) and
   returns it as `picks_made` — an earlier revision only returned `pickedCards.length`, which made the
   actual pool invisible to Claude and made pool-aware picks (leaning into an emerging archetype,

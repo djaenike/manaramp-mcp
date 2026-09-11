@@ -12,10 +12,13 @@ function quickPackLine(packNumber, pickNumber, cardIds) {
   return `[UnityCrossThreadLogger]==> BotDraft_DraftPack ` + JSON.stringify({ CurrentModule: "Draft", Payload: payload });
 }
 
+// Real shape (verified against 17Lands' own official client and manasight-parser, see
+// draft_log_parser.js's header comment and tests/test_draft_pick_parsing.mjs): `request` parses
+// directly to { PickInfo: { CardIds: [...], ... } } -- no extra .Payload wrapper, and CardIds is
+// a plural array, not a singular CardId.
 function quickPickLine(packNumber, pickNumber, cardId) {
-  const innerPayload = JSON.stringify({ PickInfo: { PackNumber: packNumber, PickNumber: pickNumber, CardId: cardId } });
-  const request = JSON.stringify({ Payload: innerPayload });
-  return `[UnityCrossThreadLogger]==> BotDraft_DraftPick ` + JSON.stringify({ request });
+  const request = JSON.stringify({ PickInfo: { PackNumber: packNumber, PickNumber: pickNumber, CardIds: [cardId] } });
+  return `[UnityCrossThreadLogger]==> BotDraftDraftPick ` + JSON.stringify({ id: "test-id", request });
 }
 
 const FAKE_CARD_DB = {
