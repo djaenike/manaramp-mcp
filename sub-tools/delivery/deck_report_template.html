@@ -98,6 +98,55 @@
   .stat.draw .value { color: var(--draw); }
   .stat.removal .value { color: var(--removal); }
 
+  .mana-curve {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    height: 110px;
+    margin: 10px 0 4px;
+  }
+  .mana-curve .bar-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    height: 100%;
+  }
+  .mana-curve .bar {
+    width: 100%;
+    background: var(--brass-dim);
+    border-radius: 2px 2px 0 0;
+    min-height: 2px;
+  }
+  .mana-curve .bar-count {
+    font-size: 0.75rem;
+    color: var(--ink-muted);
+    margin-bottom: 4px;
+    min-height: 1em;
+  }
+  .mana-curve .bar-label {
+    font-size: 0.78rem;
+    color: var(--ink-muted);
+    margin-top: 6px;
+  }
+
+  .curve-probability {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin: 12px 0 4px;
+    font-size: 0.9rem;
+  }
+  .curve-probability .turn { color: var(--ink-muted); }
+  .curve-probability .turn b { color: var(--ink); }
+  .curve-note {
+    font-size: 0.8rem;
+    color: var(--ink-muted);
+    margin-top: 8px;
+    max-width: 68ch;
+  }
+
   section { margin: 36px 0; }
   section h2 { font-size: 1.25rem; margin-bottom: 12px; }
   section p { color: var(--ink); max-width: 68ch; }
@@ -223,6 +272,14 @@
   </div>
 </template>
 
+<template id="curve-bar-template">
+  <div class="bar-col">
+    <div class="bar-count"></div>
+    <div class="bar"></div>
+    <div class="bar-label"></div>
+  </div>
+</template>
+
 <template id="combo-template">
   <div class="combo-card">
     <div class="pieces"></div>
@@ -304,6 +361,50 @@ function renderDeckReport(deckData) {
     statRow.appendChild(tpl);
   }
   root.appendChild(statRow);
+
+  // Mana curve + land-draw probability ("make sure mana makes sense")
+  if (out.manaCurve || out.curveOutProbability) {
+    const s = document.createElement("section");
+    s.innerHTML = "<h2>Mana curve</h2>";
+
+    if (out.manaCurve) {
+      const buckets = ["0", "1", "2", "3", "4", "5", "6", "7+"];
+      const maxCount = Math.max(1, ...buckets.map((b) => out.manaCurve[b] ?? 0));
+      const curveEl = document.createElement("div");
+      curveEl.className = "mana-curve";
+      for (const b of buckets) {
+        const count = out.manaCurve[b] ?? 0;
+        const tpl = document.getElementById("curve-bar-template").content.cloneNode(true);
+        tpl.querySelector(".bar-count").textContent = count || "";
+        tpl.querySelector(".bar").style.height = `${Math.max(2, (count / maxCount) * 100)}%`;
+        tpl.querySelector(".bar-label").textContent = b;
+        curveEl.appendChild(tpl);
+      }
+      s.appendChild(curveEl);
+    }
+
+    if (out.curveOutProbability) {
+      const probRow = document.createElement("div");
+      probRow.className = "curve-probability";
+      for (let turn = 1; turn <= 6; turn++) {
+        const p = out.curveOutProbability[`turn_${turn}`];
+        if (p == null) continue;
+        const span = document.createElement("span");
+        span.className = "turn";
+        span.innerHTML = `On curve T${turn}: <b>${Math.round(p * 100)}%</b>`;
+        probRow.appendChild(span);
+      }
+      s.appendChild(probRow);
+      if (out.curveOutProbability.note) {
+        const note = document.createElement("p");
+        note.className = "curve-note";
+        note.textContent = out.curveOutProbability.note;
+        s.appendChild(note);
+      }
+    }
+
+    root.appendChild(s);
+  }
 
   // Strategy + wincons
   if (out.strategy || (out.wincons && out.wincons.length)) {
@@ -416,6 +517,11 @@ const DECK_DATA = {
     numberOfPlaneswalkers: 0,
     cardDrawCount: 9,
     removalCount: 10,
+    manaCurve: { "0": 2, "1": 6, "2": 15, "3": 12, "4": 8, "5": 4, "6": 2, "7+": 1 },
+    curveOutProbability: {
+      note: "Simplified model: 7-card opening hand + 1 draw/turn, no mulligans/scry/ramp/card-draw spells modeled.",
+      turn_1: 0.554, turn_2: 0.714, turn_3: 0.821, turn_4: 0.891, turn_5: 0.934, turn_6: 0.961,
+    },
     consistencyIssues: [],
     bracketLevelMatchesRequest: true,
     otherRelevantInfo: null

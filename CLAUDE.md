@@ -4,15 +4,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A local MCP (Model Context Protocol) server, entirely in `index.js` (~1400 lines, ESM, no build step, no
-tests, no lint config). It runs over stdio and is spawned as a subprocess by Claude Desktop / Claude Code.
-It exposes 20 tools: 10 let Claude reason over live Magic: The Gathering data instead of guessing from
-training data, 5 (`playtest_*`) drive a companion local playtest server, 2 (`rate_deck_bracket`,
-`analyze_deck_consistency`) are deterministic checks — power-level bracket and structural legality/mana
-curve, respectively — against real data instead of an eyeballed guess, 2 more (`get_moxfield_decklist`,
-`get_deck_price_total`) round out deck import and a whole-decklist price check, and 1 (`deliver_finished_deck`)
-composes the bracket/price/consistency checks plus playtest table creation into the single required
-final-delivery step — see below and `extensions/README.md`.
+A local MCP (Model Context Protocol) server. `index.js` is now a thin sequencing layer (ESM, no build
+step) — it just wires together focused modules under `sub-tools/`, grouped by concern rather than by
+tool name. It runs over stdio and is spawned as a subprocess by Claude Desktop / Claude Code.
+
+It exposes 8 tools:
+- `new_deck_creation` / `existing_deck_cleanup` — build or validate a Commander (or other-format) deck,
+  always ending in a full HTML report (see "Deck delivery pipeline" below). These are the two "deck
+  building" tools the project was consolidated around, and each sequences several `sub-tools/` modules
+  in turn rather than being one flat fetch-and-return handler.
+- `search_cards` / `get_card_synergies` / `find_combos` / `get_card_script` — raw lookup tools exposed
+  standalone specifically so Claude can call them repeatedly *while* reasoning about a decklist, before
+  ever calling the two deck tools above: finding real candidates for a role via Scryfall search,
+  checking a candidate has real EDHREC support in the deck's colors/theme, verifying a pairing is a
+  genuine documented Commander Spellbook combo, and pulling Forge's structured script to disambiguate
+  a tricky ability. This is what makes "pick the best cards, checking combos/pairing/pricing/Forge
+  text" an actual capability rather than something the two deck tools' descriptions merely claimed —
+  earlier revisions referenced these tools by name in `new_deck_creation`'s description without
+  actually registering them, which meant Claude had no way to call them.
+- `arena_draft_assistance` / `arena_draft_game_advice` — read MTG Arena's `Player.log` and resolve pack
+  contents / match events to real card data for draft-pick and in-game advice.
+
+Playtest-table integration (`extensions/playtest-table`, a companion Cloudflare Worker) and its 5
+`sub-tools/playtest/*`-backed operations (list/create/get-state/load-deck/do-action) are **not** wired
+into any of the 8 tools right now — deliberately. See "Playtest table (currently disabled)" below.
+Nothing under `sub-tools/playtest/` or `extensions/` needs to change for that; the code is intact and
+independently testable, it's just not called from `index.js`.
 
 ## Commands
 
@@ -21,167 +38,215 @@ npm install     # only setup step — plain JS, no build
 node index.js   # or `npm start` — runs the server directly over stdio
 ```
 
-There is no test suite, linter, or build step. The only way to validate a change is to run the server
-and exercise a tool through an MCP client (Claude Desktop/Code), since stdio servers aren't meaningfully
-testable by just running the file standalone (it blocks waiting on stdio and any output goes to a client,
-not the terminal).
+There's a small `tests/` directory (plain `.mjs` scripts, no test runner/framework — run each directly
+with `node tests/<file>.mjs`) that mocks `global.fetch` and imports real functions from `index.js` and
+`sub-tools/` to check them in isolation, since a stdio server itself isn't meaningfully testable by just
+running the file standalone (it blocks waiting on stdio and any output goes to a client, not the
+terminal). Still true: the only way to validate a *tool's actual UX* (not just its logic) is to run the
+server and exercise a tool through an MCP client (Claude Desktop/Code).
 
 To connect a local checkout to Claude Desktop for manual testing, add to
 `claude_desktop_config.json` (path in [readme.md](readme.md)):
 ```json
 { "mcpServers": { "scryfall": { "command": "node", "args": ["/absolute/path/to/index.js"] } } }
 ```
-Restart Claude Desktop after any change to `index.js` — it does not hot-reload.
+Restart Claude Desktop after any change to `index.js` or any `sub-tools/` file — it does not hot-reload.
 
 ## Architecture
 
 Every tool follows the same shape: `server.tool(name, description, zodSchema, async handler)`, where the
-handler fetches from a public HTTP API and returns `{ content: [{ type: "text", text: ... }] }` (MCP's
-required response envelope — always stringify JSON payloads into that one text field).
+handler sequences one or more `sub-tools/` functions and returns `{ content: [{ type: "text", text: ... }] }`
+(MCP's required response envelope — always stringify JSON payloads into that one text field).
 
 The tool descriptions passed to `server.tool(...)` are load-bearing, not cosmetic — they're what the
-calling Claude model reads to decide when and how to use each tool and how to interpret caveats about a
-data source's reliability. When editing a tool, keep the description accurate to its actual behavior and
-data-quality caveats, since that's the only place this information reaches the model.
+calling Claude model reads to decide when and how to use each tool, how to interpret caveats about a
+data source's reliability, and (for the two deck tools) what to actually do with the response. When
+editing a tool, keep the description accurate to its actual behavior and data-quality caveats, since
+that's the only place this information reaches the model.
 
-Several independent upstream data sources (plus a couple of purely local, deterministic checks) are
-combined below, each with different trust levels — this drives most of the caveats in tool
-descriptions and error messages:
-
-- **Scryfall** (`search_cards`, `get_card_by_name`, `get_rulings`) — official, documented, no API key.
-  Source of card text/legality/bulk price estimate.
-- **EDHREC** (`edhrec_get_commander_recommendations`, `edhrec_get_card_synergies`,
-  `edhrec_get_average_decklist`) — unofficial, undocumented JSON endpoints reverse-engineered from
-  edhrec.com's own frontend. No fuzzy matching; `slugify()` must produce an exact slug match or it 404s.
-- **Forge** (`get_card_script`) — reads community rules-engine scripts live from Card-Forge/forge's GitHub
-  raw file host (GPL-3.0), keyed by a guessed filename via `forgeFilename()`. Not verified against split
-  cards, DFCs, or unusual punctuation; 404s should fall back to Scryfall oracle text.
-- **Card Kingdom** (`get_cardkingdom_price`, and internally reused by `build_budget_deck`) — no developer
-  API; fetches one large public pricelist JSON file and filters in memory. Numeric fields arrive from CK
-  as strings and must be parsed. Designated as this server's standardized "real dollar price" source,
-  distinct from Scryfall's bundled bulk-estimate price.
-- **Commander Spellbook** (`find_combos`) — official REST API, MIT licensed, but the exact query
-  parameter (`q`) is inferred from a syntax guide rather than confirmed against live docs (their docs site
-  blocks automated fetching).
-- **playtest-table** (`playtest_list_games`, `playtest_create_table`, `playtest_get_state`,
-  `playtest_load_deck`, `playtest_do_action`) — NOT a public API at all: a companion server
-  (`extensions/playtest-table`, SvelteKit + Cloudflare Durable Objects) deployed as a real Cloudflare
-  Worker at `PLAYTEST_BASE` in `index.js` (`https://scryfall-mcp.playtest-table.workers.dev` by
-  default — no local process needs to be running for normal use). `PLAYTEST_SERVER_URL` overrides
-  that default to point at a local `npx wrangler dev --port 8787` instead, for developing the
-  playtest-table app itself. Every one of these 5 tools fails fast with an actionable message if the
-  target server can't be reached. Critically, an AI-controlled seat's turns are **not** driven by
-  these tools or by any Claude session at all in normal play — the deployed Worker resolves them
-  itself via a Durable Object alarm that calls the Anthropic API directly (its own
-  `ANTHROPIC_API_KEY` secret, Haiku 4.5 by default), so a game plays itself end-to-end the moment a
-  human clicks through the lobby, with zero dependency on this MCP server or a Claude conversation
-  being open anywhere. See `extensions/README.md` for the full autonomous-play design and its own
-  further Claude-Code-only conveniences (CLI scripts for directly scripting/observing a room over
-  its WebSocket, independent of the autonomous alarm) that these 5 tools don't replace — they're the
-  subset that also works from Claude Desktop, which has no Bash tool or background-task
-  notifications to run those with.
-- **Commander Bracket System** (`rate_deck_bracket`) — not a live data source at all: `GAME_CHANGERS`,
-  `MASS_LAND_DENIAL_CARDS`, and `EXTRA_TURN_CARDS` are hardcoded reference lists (Game Changers current
-  as of the Feb 9, 2026 update, reviewed by the Commander Format Panel roughly every 3-4 months —
-  re-verify against WotC's own list if a rating looks off). Combo detection reuses Commander Spellbook
-  (same caveats as `find_combos`) but queries **one card at a time** — empirically confirmed this
-  session that Commander Spellbook's `or` keyword is accepted syntax but does NOT behave as boolean OR
-  (two individually-valid single-card queries can combine via `or` into zero results), so don't
-  reintroduce a batched-OR "optimization" here without re-verifying it against the live API first.
-- **`analyze_deck_consistency`** — not a separate upstream source: reuses the same Scryfall
-  `/cards/collection` batch call `classifyComboSpeed`/`resolveCardInfo` already use (one fetch
-  yields `cmc`, `type_line`, `color_identity`, and `legalities.commander` for the whole decklist at
-  once). Checks deck size (100, commander(s) included), singleton (basic-land-ness read from the
-  real `type_line`, not a hardcoded name list), color identity, and Commander legality — then
-  computes a mana curve and a `curve_out_probability` (turns 1-6) via a hand-rolled hypergeometric
-  helper (`combinations`/`hypergeometricAtLeast`, an iterative running product/division so a
-  99-card library never risks overflow). That probability is an explicitly SIMPLIFIED model (7-card
-  opening hand + 1 draw/turn, no mulligans/scry/ramp/card-draw spells) — verified by hand this
-  session (37/99 lands → 96.7% chance of ≥1 land in the opening 7, matching the classic
-  Frank-Karsten-style reference figure). Deliberately does **not** detect combos — that stays
-  `rate_deck_bracket`'s job, so the Commander-Spellbook-querying logic never has to live in two
-  places at once.
-- **Moxfield** (`get_moxfield_decklist`) — no official public API; hits the same undocumented
+`sub-tools/` is organized by concern, not by tool:
+- `scryfall/` — `client.js` (shared `HEADERS` + `scryfallFetch` — Scryfall rejects requests without an
+  accurate User-Agent), `cards.js` (search/get/rulings — `searchCards`/`getCardByName` both include a
+  `category` field, via `classify.js`, alongside the raw `type_line`), `classify.js` (pure, fetch-free
+  `classifyCategory`/`isManaRock`/`isCardDraw`/`isRemoval` — lives at this base layer, not in
+  `delivery/`, specifically so both the lookup tools and the final report share one classification
+  instead of two drifting copies). Official, documented API, no key needed.
+- `edhrec/` — `client.js` (`slugify()`, EDHREC's URL slug format — no fuzzy matching, an inexact slug
+  404s), `recommendations.js` (`getCommanderRecommendations`, used internally by both deck tools for
+  commander-fit context; `getCardSynergies`, exposed as the standalone `get_card_synergies` tool;
+  `getAverageDecklist`, still not exposed anywhere). Unofficial, undocumented JSON endpoints
+  reverse-engineered from edhrec.com's own frontend.
+- `forge/card_script.js` — reads community rules-engine scripts live from Card-Forge/forge's GitHub raw
+  file host (GPL-3.0), keyed by a guessed filename via `forgeFilename()`. Not verified against split
+  cards, DFCs, or unusual punctuation; 404s should fall back to Scryfall oracle text. Exposed as the
+  standalone `get_card_script` tool.
+- `cardkingdom/pricing.js` — no developer API; fetches one large public pricelist JSON file and filters
+  in memory. Numeric fields arrive from CK as strings and must be parsed. This server's standardized
+  "real dollar price" source, distinct from Scryfall's bundled bulk-estimate price. `computeDeckPriceTotal`
+  and `fetchPriceByNameMap` are the two entry points other modules reuse (deck delivery and the
+  price-constrained builder, respectively) instead of re-fetching the pricelist per card.
+- `spellbook/combos.js` — Commander Spellbook's official REST API (MIT licensed), but the exact query
+  parameter (`q`) is inferred from a syntax guide rather than confirmed against live docs (their docs
+  site blocks automated fetching). `findCombos` (the standalone `find_combos` tool, queried with an
+  explicit AND across whatever card names are passed in) is the one exception to the next point — it's
+  meant for a Claude-driven "do these specific cards combo" check, not a full-decklist scan.
+  `classifyComboSpeed`/`findCombosInDeck` (used internally by `bracket/rating.js`, not exposed
+  standalone) query **one card at a time** across the whole decklist — empirically confirmed that
+  Spellbook's `or` keyword is accepted syntax but does NOT behave as boolean OR (two individually-valid
+  single-card queries can combine via `or` into zero results), so don't reintroduce a batched-OR
+  "optimization" there without re-verifying it against the live API first.
+- `bracket/rating.js` (+ `reference_data.js`) — the Commander Bracket System classifier. Not a live data
+  source: `GAME_CHANGERS`, `MASS_LAND_DENIAL_CARDS`, `EXTRA_TURN_CARDS` are hardcoded reference lists
+  (Game Changers current as of the Feb 9, 2026 update, reviewed by the Commander Format Panel roughly
+  every 3-4 months — re-verify against WotC's own list if a rating looks off). Combo detection reuses
+  `spellbook/combos.js`.
+- `deck-building/consistency.js` — not a separate upstream source: reuses the same Scryfall
+  `/cards/collection` batch call (one fetch yields `cmc`, `type_line`, `color_identity`,
+  `legalities.commander`, `mana_cost`, `oracle_text`, and an `image_url` for the whole decklist at once,
+  the last three specifically so `delivery/report_data.js` doesn't need a second fetch). Checks deck
+  size (100, commander(s) included), singleton (basic-land-ness read from the real `type_line`, not a
+  hardcoded name list), color identity, and Commander legality — then computes a mana curve and a
+  `curve_out_probability` (turns 1-6) via a hand-rolled hypergeometric helper (`combinations`/
+  `hypergeometricAtLeast`, an iterative running product/division so a 99-card library never risks
+  overflow). That probability is an explicitly SIMPLIFIED model (7-card opening hand + 1 draw/turn, no
+  mulligans/scry/ramp/card-draw spells). Deliberately does **not** detect combos — that stays
+  `bracket/rating.js`'s job, so the Commander-Spellbook-querying logic never has to live in two places.
+- `deck-building/price_constrained_builder.js` (`buildDeckByPrice`) — pulls a commander's full EDHREC
+  card pool, cross-references every candidate against Card Kingdom's pricelist, and greedily fills 99
+  nonland slots by synergy-per-dollar under an *optional* price ceiling (no ceiling at all is a valid,
+  common case — not exclusively a "budget" tool, hence the name; it replaced an earlier
+  `budget_builder.js` that always required a hard budget, since removed). Explicitly a synergy-per-
+  dollar optimizer, not a power-level/bracket classifier or combo-aware deckbuilder — it doesn't check
+  curve, color balance, or land count on its own (that's why its output always goes through
+  `analyze_deck_consistency`/`rate_deck_bracket` afterward).
+- `deck-building/moxfield.js` — no official public API; hits the same undocumented
   `api2.moxfield.com/v2/decks/all/<deckId>` endpoint Moxfield's own frontend calls, which needs its own
-  browser-like `MOXFIELD_HEADERS` (the shared Scryfall `HEADERS` User-Agent gets rejected here). **Known,
-  confirmed issue**: Moxfield's anti-bot protection sometimes 403s Node's `fetch()` outright — verified
-  live this session that identical requests succeed via `curl` but fail via Node `fetch()` even with a
-  full realistic Chrome header set (sec-ch-ua, Origin, Referer), which points at TLS/transport-level
-  fingerprinting rather than anything header-content can fix. Deliberately shipped anyway with a clear
-  403 fallback message (paste decklist text directly instead) rather than chasing a fingerprint-spoofing
-  dependency — that would be an arms race against Cloudflare's bot detection, not a stable fix.
+  browser-like `MOXFIELD_HEADERS` (the shared Scryfall `HEADERS` User-Agent gets rejected here). **Known
+  issue**: Moxfield's anti-bot protection sometimes 403s Node's `fetch()` outright even with a full
+  realistic Chrome header set — points at TLS/transport-level fingerprinting, not anything header-content
+  can fix. Shipped anyway with a clear 403 fallback message (paste decklist text directly instead)
+  rather than chasing a fingerprint-spoofing arms race against Cloudflare's bot detection.
+- `playtest/` (`client.js`, `state.js`, `lobby.js`, `actions.js`) — the playtest-table WebSocket
+  protocol. `parsePlaytestDecklist` (in `state.js`) is the one function from here actually used by the
+  live tools today (both deck tools use it to parse `Commander`/`Deck` sections). See "Playtest table
+  (currently disabled)" below for the rest.
+- `delivery/` — the deck report pipeline; see "Deck delivery pipeline" below. Also holds
+  `create_playtest_room.js` (currently unused, see below).
+- `arena-log/` (`log_reader.js`, `draft_log_parser.js`, `gre_match_parser.js`, `grpid_resolver.js`) —
+  backs the two `arena_*` tools. `log_reader.js` tracks a byte offset per `player_log_path` so repeated
+  calls only process new lines (Arena rewrites `Player.log` from scratch every launch — a size decrease
+  is detected as a relaunch and resets state). `grpid_resolver.js` batches `arena_id:<id>` lookups
+  through `scryfall/cards.js`'s `search_cards`-equivalent, confirmed live against Scryfall's search
+  syntax. Only Premier/Quick Draft are implemented in `draft_log_parser.js` (not Traditional/Sealed).
+  `gre_match_parser.js` only reports ANNOTATED, CONFIRMED events — an `ActionsAvailableReq` listing a
+  legal option is never reported as something that happened, only an actual
+  `ZoneTransfer`/`ObjectsSelected`/damage annotation is. Arena's own log records the human's actual
+  pick confirmation the moment it happens in-client (`DraftScanner`'s `pickedCards`, populated from
+  `Draft.MakeHumanDraftPick`/`BotDraft_DraftPick` lines) — no separate "tell Claude what you picked"
+  step is needed. `arena_draft_assistance`'s handler in `index.js` resolves `pickedCards` through the
+  same `resolveGrpIds` call as `currentPack` (one combined batch, since `resolveGrpIds` dedupes) and
+  returns it as `picks_made` — an earlier revision only returned `pickedCards.length`, which made the
+  actual pool invisible to Claude and made pool-aware picks (leaning into an emerging archetype,
+  avoiding an over-drafted color) impossible; see `tests/test_arena_picks_resolved.mjs`. There is
+  still no external pick-quality data source wired in anywhere (no 17Lands win rates, no tier list) —
+  `draft_log_parser.js`'s header comment notes it borrowed 17Lands' *log format* knowledge from the
+  open-source `MTGA_Draft_17Lands` project, deliberately not its rating data — so pick advice is
+  Claude's own judgment over real oracle text/mana cost, not backed by aggregated draft-performance
+  stats, UNLESS `card_ratings_csv_path` is supplied (see `card_ratings.js` below).
+- `arena-log/card_ratings.js` — optional real win-rate/signal data for `arena_draft_assistance`,
+  loaded from a card_ratings CSV the **user** manually exports from 17lands.com/card_ratings (a
+  normal button on that page) — this server never calls 17lands.com itself. That distinction is
+  deliberate: 17Lands' own usage guidelines discourage third parties from hitting their live
+  site/API directly (rate-limited, new sets embargoed ~12 days, stated risk of countermeasures
+  against abuse patterns) — that's exactly the pattern several archived/community MTGA draft tools
+  use (confirmed by reading their source: a raw `urllib.request.urlopen` against
+  `17lands.com/card_ratings/data?expansion=...`), and this repo deliberately does not replicate it.
+  17Lands' own sanctioned alternative for programmatic use is their bulk `public_datasets` (raw
+  per-game/per-pick CSVs, tens/hundreds of MB per set, requiring real aggregation to turn into
+  per-card ratings) — a substantially bigger integration than a manually-exported snapshot;
+  not built here. `parseCardRatingsCsv`/`loadCardRatings` hand-parse the export (quoted CSV, no
+  dependency added) into a `Map<lowercased name, row>`; percentage/`pp` columns parse to numbers,
+  blank cells (small sample size) parse to `null` — **null means no reliable data, not a bad card**,
+  don't treat it as 0. `index.js` caches one loaded `Map` per `card_ratings_csv_path` (like
+  `draftSessions`) and merges each pack/pick card's row onto it as `card_ratings_17lands` by exact
+  name match (lowercased) — no fuzzy matching, so a 17Lands name that doesn't exactly match
+  Scryfall's (rare, but possible for reprints/promos) silently returns `null` there. See
+  `tests/test_card_ratings_csv.mjs`.
 
-`build_budget_deck` is a composite tool: it pulls a commander's full EDHREC card pool, cross-references
-every candidate against Card Kingdom's full pricelist, and greedily fills 99 slots by synergy-per-dollar
-under a budget. It fetches CK's entire pricelist on every call (same slow path as `get_cardkingdom_price`)
-and is explicitly a synergy-per-dollar optimizer, not a power-level/bracket classifier or combo-aware
-deckbuilder — it doesn't check curve, color balance, or land count.
+`index.js` keeps its own per-`player_log_path` session maps (`draftSessions`/`matchSessions`) so the two
+Arena tools' offset/state persists *across* separate tool calls within one running server process (each
+pick / each poll is its own MCP call).
 
-`deliver_finished_deck` is the other composite tool, and the newest one: it's not an independent data
-source but glue over five other tools' logic (bracket, price, consistency, and playtest table
-creation/deck loading), see "Deck-building final deliverable" below for its contract. Its handler is the
-one place in this file where a tool calls `Promise.all` across independently-throwing async functions
-(`computeDeckConsistency`/`computeBracketRating`/`computeDeckPriceTotal`) rather than one `fetch` — each
-was refactored out of its own standalone tool specifically so this composite could call the same logic
-without duplicating it or invoking the standalone tools over MCP from within a tool handler.
+## Deck delivery pipeline
 
-Two name-normalization helpers are shared across tools and are a common source of lookup failures:
-- `slugify()` — EDHREC's URL slug format (lowercase, hyphens, punctuation stripped)
-- `forgeFilename()` — Forge's cardsfolder filename format (lowercase, underscores, punctuation stripped)
+Both deck tools funnel through a shared `runChecksAndDeliver` (defined in `index.js`, not tucked into
+`sub-tools/`, specifically so the full check → build report → render sequence stays visible in one
+place) after they've resolved a `decklist_text` (auto-built, pasted, or fetched from Moxfield):
 
-`HEADERS` (User-Agent + Accept) is sent on every outbound fetch — Scryfall in particular rejects requests
-without an accurate User-Agent.
+1. Parse `Commander`/`Deck` sections via `playtest/state.js`'s `parsePlaytestDecklist`. If that fails
+   entirely (no commander or no deck found at all), return immediately — there's nothing coherent to
+   report on.
+2. Run `computeDeckConsistency`, `computeBracketRating`, and `computeDeckPriceTotal` in parallel
+   (`Promise.all` — this is the one place in the file that pattern is used instead of a single `fetch`).
+3. `delivery/report_data.js`'s `buildActualOutput(...)` assembles the full `actualOutput` contract
+   defined in `delivery/deck_report_template.json` (the canonical shape reference — read it before
+   changing this pipeline's output fields) from those three results: full per-card list (name/qty/
+   category/price/image/mana cost/oracle text — category via `classifyCategory(typeLine)`; mana-rock/
+   card-draw/removal counts are oracle-text-keyword HEURISTICS, not real Scryfall fields, and will miss
+   edge cases), category counts, `manaCurve`/`curveOutProbability` (passed through verbatim from
+   `computeDeckConsistency`'s `mana_curve`/`curve_out_probability` — the report's actual "make sure
+   mana makes sense" surface), the Moxfield-import string, and a `bracketLevelMatchesRequest` flag
+   (compares bracket *numbers* extracted from both strings, since e.g. "Bracket 3" vs "Upgraded (3)"
+   don't share text otherwise). Card images stay plain Scryfall `https://` URLs here — **do not**
+   base64-inline them by default (see the file's own header comment): a previous revision called
+   `scryfall/images.js`'s `inlineCardImages` here to embed every card's image, and it broke real
+   decks — the MCP tool response (this JSON, plus `html_report` embedding a second copy of it) has a
+   hard client-enforced size cap (observed ~1MB), and ~90 inlined images alone already blow past that.
+   Measured: the same ~100-card `actual_output` payload is ~38KB with plain image URLs vs. >1.6MB
+   inlined. `inlineCardImages` still exists and works, for the separate case of manually re-embedding
+   images before publishing the rendered HTML as a shareable web Artifact elsewhere (not subject to
+   the MCP tool-result cap) — it's just not called by this default pipeline.
+4. `delivery/html_renderer.js`'s `renderDeckReportHtml(...)` loads `delivery/deck_report_template.html`
+   from disk and does the templating **server-side** — swaps its placeholder `DECK_DATA` for the real
+   `{ userDefinedScope, actualOutput }` via an anchored string replace, and strips the file's own
+   "boilerplate reference only" comment. This is deliberate: the calling Claude model is NOT expected to
+   reconstruct the report from the template each time (that would risk drift/bugs) — the MCP renders one
+   complete HTML string (`html_report`) instead.
+5. `index.js`'s `writeReportFile(deck_name, htmlReport)` also saves that same HTML to `reports/`
+   (gitignored, resolved next to `index.js` via `import.meta.url` so it's stable regardless of cwd) and
+   returns the path as `report_path`. This is the *primary* way a user actually views the report: opening
+   `report_path` in a real browser has no CSP restriction, so the plain Scryfall image URLs above load
+   normally there — unlike a claude.ai/Code Artifact, which is why the tool descriptions tell Claude to
+   surface `report_path` to the user rather than only relying on `html_report` being published as one. A
+   filesystem failure here returns `report_path: null` rather than failing the whole delivery — the
+   in-response `html_report` string is the fallback.
 
-The 5 `playtest_*` tools are the one place this file's usual "one-shot HTTP GET" shape doesn't apply —
-they need a real connect→send→await→close websocket lifecycle plus a connection timeout (a refused
-connection, i.e. wrangler dev not running, is the *expected* common case here, unlike the public APIs the
-other 10 tools hit). `connectRoom`/`sendAndAwait`/`withRoom` (ported from
-`extensions/playtest-table/scripts/play.js`, the pre-existing Claude-Code CLI for this same protocol)
-centralize that lifecycle so it's written once, not once per tool. `playtest_do_action`'s `type` field is
-also this file's first use of `z.enum(...)` — the wire-protocol action vocabulary is small and closed
-enough to validate directly rather than leaving it as a free-form string.
+There is **no pass/fail gate** here. A decklist that parses always gets a full report, even with
+consistency issues — `deck_report_template.html` has a built-in issue banner for exactly that case
+(renders when `actualOutput.consistencyIssues` is non-empty), so surfacing problems in the delivered
+report is more useful than refusing to deliver one. Re-run the relevant deck tool after any manual card
+swap made *during* building, not only once at the very end — a swap can silently break price, singleton,
+or color identity, and nothing else re-checks it.
 
-## Deck-building final deliverable
+If `delivery/deck_report_template.html`'s structure changes (new sections, renamed the `DECK_DATA`/
+`renderDeckReport` anchor, etc.), `html_renderer.js`'s anchors must be updated to match — it throws a
+clear error rather than silently falling back to the file's own placeholder example data if the anchors
+don't match.
 
-Whenever a conversation in this repo lands on a finished decklist — built via `build_budget_deck`,
-assembled manually, or fetched via `get_moxfield_decklist` — treat the job as unfinished until
-`deliver_finished_deck` has been called and its `final_delivery_text` has been pasted to the user
-verbatim. This tool exists specifically so the final format is defined once, in code, instead of being
-re-assembled by hand (and potentially reformatted inconsistently) at the end of every conversation.
+## Playtest table (currently disabled)
 
-Call it with `decklist_text` (the `Commander` / blank line / `Deck` block — same format
-`get_moxfield_decklist`'s `decklist_text` produces and `playtest_load_deck` parses), `deck_name`, and two
-fields that require actual judgment about the deck and so are NOT computed by the tool itself:
-- `wincon_summary` — combo-based if the deck has one (name the pieces + a turn-speed estimate, e.g.
-  "Dramatic Reversal + Isochron Scepter, achievable turn 6 or earlier"), otherwise the deck's primary
-  non-combo game plan.
-- `general_strategy` — a short paragraph on how to actually pilot the deck turn to turn.
+`extensions/playtest-table` (SvelteKit + Cloudflare Durable Objects, deployed as a real Cloudflare
+Worker) and `sub-tools/playtest/*` are untouched and fully intact, but **not called from any of the 4
+tools right now** — the playtest server needs more work, and the current focus is the core MCP
+structure/delivery pipeline. `delivery/create_playtest_room.js` (the room-creation + deck-load glue)
+still exists and works standalone but is not imported by `index.js`.
 
-Internally, `deliver_finished_deck` runs `analyze_deck_consistency`, `rate_deck_bracket`, and
-`get_deck_price_total` **unconditionally**, every time — not just "if a budget was mentioned" — via
-shared `computeDeckConsistency`/`computeBracketRating`/`computeDeckPriceTotal` functions extracted so
-the three standalone tools and this composite one never run divergent logic. If consistency comes back
-with any issue (wrong card count, a singleton violation, an off-color card, something not
-Commander-legal), the tool returns those issues instead of a delivery and deliberately does **not**
-create a playtest table for a broken deck — fix the decklist and call it again. Only when the deck is
-clean does it create the table (`playtest_create_table` with one human seat, one AI seat, labeled with
-`deck_name`, never "Untitled table" — the AI seat auto-gets its own random EDHREC opponent deck and
-opening hand) and load the built decklist into the human seat (`playtest_load_deck`'s same
-resolve-deck + loadDeck + openingHand sequence), then assembles `final_delivery_text` in the fixed
-order: decklist block, then a summary table (Price / Commander + color identity / Bracket Power / Combo
-list / Wincon(s) / General strategy), then the `room_url`. `bracket.combos_found` in the response is
-computed fresh inside this same call, so it may reveal a combo that wasn't accounted for when
-`wincon_summary` was drafted — if the two disagree, rewrite `wincon_summary` and call again before
-showing anything to the user, per the tool's own description.
+Re-enabling it later is a small, localized change: import `createPlaytestRoom` in `index.js` and add a
+step to `runChecksAndDeliver` after report-building (e.g. threading a `room_url` into `actualOutput`/the
+rendered HTML) — the rest of the pipeline's shape is unaffected. See `extensions/README.md` for the full
+autonomous-play design (an AI-controlled seat's turns are driven by the Worker's own Durable Object alarm
+calling the Anthropic API directly, not by this MCP server or any Claude conversation) if/when that work
+resumes.
 
-Because this is the *final* gate, not the only check: still call `rate_deck_bracket` /
-`get_deck_price_total` / `analyze_deck_consistency` individually (or just re-run
-`deliver_finished_deck`) after any manual swap made *during* building, not only once at the very end —
-this is a real, previously-hit failure mode: a decklist that started at $75 drifted to $135 after manual
-swaps because nothing re-verified the total after the last edit, and a swap can just as easily break
-singleton or color identity. Don't explain how to use the playtest table itself (no walkthrough of
-controls or UI) in the final message — it's meant to be self-explanatory, and instructional text just
-adds clutter here.
-
-(Future, not for this pass: a paywall gate in front of the playtest link for non-paying users —
-noted here as context for later planning, nothing to build against yet.)
+(Future, not for this pass: a paywall gate in front of the playtest link for non-paying users, once
+playtest is re-enabled — noted here as context for later planning, nothing to build against yet.)

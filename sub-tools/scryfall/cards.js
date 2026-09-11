@@ -3,10 +3,14 @@
  *
  * Same logic as index.js's search_cards / get_card_by_name / get_rulings tools,
  * refactored to return plain JS data instead of MCP-wrapped { content: [...] }
- * responses, so orchestrator tools can compose them directly.
+ * responses, so orchestrator tools can compose them directly. searchCards/
+ * getCardByName both include a `category` field (Creature/Instant/Sorcery/etc,
+ * via classify.js's classifyCategory) alongside the raw `type_line`, so Claude
+ * doesn't have to parse the type line itself while picking cards during a build.
  */
 
 import { SCRYFALL_BASE, HEADERS, scryfallFetch } from "./client.js";
+import { classifyCategory } from "./classify.js";
 
 /**
  * Search cards via Scryfall's search syntax.
@@ -36,6 +40,7 @@ async function searchCards(query, max_price_usd) {
     name: c.name,
     mana_cost: c.mana_cost,
     type_line: c.type_line,
+    category: classifyCategory(c.type_line),
     oracle_text: c.oracle_text,
     usd: c.prices?.usd ?? "N/A",
     legal_commander: c.legalities?.commander,
@@ -57,6 +62,7 @@ async function getCardByName(name) {
     name: c.name,
     mana_cost: c.mana_cost,
     type_line: c.type_line,
+    category: classifyCategory(c.type_line),
     oracle_text: c.oracle_text,
     usd: c.prices?.usd ?? "N/A",
     legalities: c.legalities,

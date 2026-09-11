@@ -2,7 +2,10 @@
  * sub-tools/deck-building/consistency.js
  * Validates deck size, singleton, color identity, Commander legality, and
  * computes mana curve + curve-out probability. Does NOT detect combos —
- * that's bracket/rating.js's job.
+ * that's bracket/rating.js's job. Also returns card_details (mana_cost,
+ * type_line, oracle_text, image_url, cmc) per card, reused by
+ * delivery/report_data.js to build the full deck report without a second
+ * Scryfall fetch.
  */
 
 import { SCRYFALL_BASE, HEADERS, scryfallFetch } from "../scryfall/client.js";
@@ -59,6 +62,24 @@ async function computeDeckConsistency(commander_names, deck_entries) {
 
   const isLand = (card) => (card?.type_line ?? "").includes("Land");
   const isBasicLand = (card) => (card?.type_line ?? "").includes("Basic Land");
+
+  // Per-card detail lookup, keyed by the exact deck-entry/commander name as supplied (not
+  // lowercased) -- report_data.js's buildActualOutput needs mana_cost/oracle_text/image_url
+  // per card and reuses this instead of a second Scryfall round-trip.
+  const cardDetails = new Map();
+  for (const name of allIdentifierNames) {
+    const card = cardByName.get(name.toLowerCase());
+    if (!card) continue;
+    cardDetails.set(name, {
+      mana_cost: card.mana_cost ?? card.card_faces?.[0]?.mana_cost ?? "",
+      type_line: card.type_line ?? "",
+      oracle_text: card.oracle_text ?? card.card_faces?.[0]?.oracle_text ?? "",
+      // "small" (~146x204, a few KB) not "normal" -- this ends up base64-inlined into the
+      // HTML report (see scryfall/images.js), so a smaller source image matters here.
+      image_url: card.image_uris?.small ?? card.card_faces?.[0]?.image_uris?.small ?? null,
+      cmc: card.cmc ?? 0,
+    });
+  }
 
   const commanderColorSet = new Set();
   for (const name of commander_names) {
@@ -152,6 +173,7 @@ async function computeDeckConsistency(commander_names, deck_entries) {
     not_commander_legal: notCommanderLegal,
     not_found: notFound,
     commander_color_identity: Array.from(commanderColorSet),
+    card_details: cardDetails,
   };
 }
 

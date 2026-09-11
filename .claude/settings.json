@@ -46,7 +46,14 @@
       "Bash(npm view *)",
       "mcp__claude_ai_Microsoft_365__sharepoint_search",
       "mcp__claude_ai_Microsoft_365__read_resource",
-      "mcp__claude_ai_Microsoft_365__sharepoint_folder_search"
+      "mcp__claude_ai_Microsoft_365__sharepoint_folder_search",
+      "Bash(node \"C:/Users/djaenike/AppData/Local/Temp/claude/c--Users-djaenike-OneDrive---Archaea-Energy-Desktop-Claude-Projects-scryfall-mcp/edeee1c1-bc6a-49c7-b2e4-ac5670a089cb/scratchpad/sanity_check.mjs\")",
+      "Bash(node -e \"process.argv[1]='/nonexistent'; import\\('./index.js'\\).then\\(\\(\\)=>console.log\\('index.js imports OK'\\)\\).catch\\(e=>console.error\\('IMPORT FAIL:', e.stack\\)\\)\")",
+      "Bash(node tests/test_orchestration_success.mjs)",
+      "Bash(node live_demo.mjs)",
+      "Bash(node tests/test_orchestration_blocked.mjs)",
+      "Bash(node tests/test_imports.mjs)",
+      "Bash(node -e \"process.argv[1]='/nonexistent'; import\\('./index.js'\\).then\\(\\(\\)=>console.log\\('index.js OK'\\)\\).catch\\(e=>console.error\\('FAIL:', e.stack\\)\\)\")"
     ]
   }
 }

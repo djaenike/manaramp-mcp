@@ -30,10 +30,10 @@
         "quantity": "<number: usually 1, singleton format>",
         "category": "<string: e.g. 'Creature', 'Instant', 'Land' -- derived from type_line>",
         "priceUsd": "<number: this card's individual price>",
-        "imageUrl": "<string: Scryfall image_uris.normal or .large -- NOT currently returned by consistency.js's card lookup, needs that field added>",
+        "imageUrl": "<string OR null: Scryfall's small image_uris URL (from consistency.js's card_details map), a plain https:// URL -- deliberately NOT base64-inlined. Embedding ~100 cards' worth of images blows the MCP tool response well past its ~1MB cap; report_path's saved local file is where images actually load reliably (a real browser has no CSP restriction on a file:// page). scryfall/images.js's inlineCardImages exists for the separate case of manually re-embedding images before publishing this HTML as a shareable web Artifact, which DOES block external image hosts by CSP -- not used by default here>",
         "manaCost": "<string: e.g. '{2}{U}{U}'>",
         "typeLine": "<string: full type line as Scryfall returns it>",
-        "oracleText": "<string: full rules text -- NOT currently returned by consistency.js's card lookup, needs that field added>"
+        "oracleText": "<string: full rules text, from consistency.js's card_details map>"
       }
     ],
     "moxfieldImport": "<string: plain-text decklist in Moxfield's import format ('1 Card Name' per line) -- this is just decklist_text, Moxfield import has no separate object format>",
@@ -47,6 +47,8 @@
     "numberOfPlaneswalkers": "<number>",
     "cardDrawCount": "<number: HEURISTIC -- oracle text keyword match on 'draw a card' etc, approximate, will misclassify some conditional/rare draw effects>",
     "removalCount": "<number: HEURISTIC -- oracle text keyword match on 'destroy target'/'exile target'/damage-based removal etc, approximate>",
+    "manaCurve": "<object OR null: nonland card count by CMC bucket, keys '0'-'6' and '7+', from analyze_deck_consistency's mana_curve>",
+    "curveOutProbability": "<object OR null: analyze_deck_consistency's curve_out_probability verbatim -- a 'note' string plus turn_1..turn_6 fields, each the probability (0-1) of having drawn at least that many lands by that turn (7-card opening hand + 1 draw/turn). SIMPLIFIED model -- no mulligans/scry/ramp/card-draw spells factored in>",
     "consistencyIssues": [
       "<string: one issue from analyze_deck_consistency's issues array, empty array if the deck is clean>"
     ],

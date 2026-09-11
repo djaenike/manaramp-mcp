@@ -1,0 +1,64 @@
+// Verifies the fix for arena_draft_assistance's real gap: pickedCards (grpIds Arena's own log
+// already records as actually picked) must be resolved to real card data and returned, not just
+// counted. Exercises the exact same building blocks index.js's handler uses -- DraftScanner +
+// resolveGrpIds -- with fake log lines shaped like real Quick Draft pack/pick broadcasts, so this
+// doesn't depend on a real running Arena client or Player.log.
+
+const { DraftScanner } = await import("../sub-tools/arena-log/draft_log_parser.js");
+const { resolveGrpIds } = await import("../sub-tools/arena-log/grpid_resolver.js");
+
+function quickPackLine(packNumber, pickNumber, cardIds) {
+  const payload = JSON.stringify({ DraftStatus: "PickNext", PackNumber: packNumber, PickNumber: pickNumber, DraftPack: cardIds });
+  return `[UnityCrossThreadLogger]==> BotDraft_DraftPack ` + JSON.stringify({ CurrentModule: "Draft", Payload: payload });
+}
+
+function quickPickLine(packNumber, pickNumber, cardId) {
+  const innerPayload = JSON.stringify({ PickInfo: { PackNumber: packNumber, PickNumber: pickNumber, CardId: cardId } });
+  const request = JSON.stringify({ Payload: innerPayload });
+  return `[UnityCrossThreadLogger]==> BotDraft_DraftPick ` + JSON.stringify({ request });
+}
+
+const FAKE_CARD_DB = {
+  70000: { name: "Fake Bomb Rare", type_line: "Creature", category: "Creature" },
+  70001: { name: "Fake Common Removal", type_line: "Instant", category: "Instant" },
+  70002: { name: "Fake Second Pick", type_line: "Sorcery", category: "Sorcery" },
+};
+async function fakeSearchCards(query) {
+  const id = parseInt(query.split(":")[1], 10);
+  return FAKE_CARD_DB[id] ? [FAKE_CARD_DB[id]] : [];
+}
+
+const scanner = new DraftScanner();
+
+// Pack 1, pick 1: two cards offered, human picks 70000.
+scanner.processLines([quickPackLine(0, 0, [70000, 70001])]);
+scanner.processLines([quickPickLine(0, 0, 70000)]);
+
+// Pack 1, pick 2: a new pack arrives.
+scanner.processLines([quickPackLine(0, 1, [70002])]);
+
+const state = scanner.getState();
+console.log("currentPack (raw grpIds):", state.currentPack);
+console.log("pickedCards (raw grpIds):", state.pickedCards);
+
+// Mirrors index.js's arena_draft_assistance handler exactly: one combined resolveGrpIds call.
+const currentPackIds = state.currentPack.map((id) => parseInt(id, 10));
+const pickedCardIds = state.pickedCards.map((id) => parseInt(id, 10));
+const resolved = await resolveGrpIds([...currentPackIds, ...pickedCardIds], fakeSearchCards);
+const resolveOne = (id) => {
+  const card = resolved.get(parseInt(id, 10));
+  return card ? card[0] ?? card : { grpId: id, card: null };
+};
+const enrichedPack = state.currentPack.map(resolveOne);
+const picksMade = state.pickedCards.map(resolveOne);
+
+console.log("picks_made (resolved):", JSON.stringify(picksMade));
+console.log("current_pack (resolved):", JSON.stringify(enrichedPack));
+
+const pass = state.pickedCards.length === 1
+  && picksMade.length === 1 && picksMade[0]?.name === "Fake Bomb Rare"
+  && enrichedPack.length === 1 && enrichedPack[0]?.name === "Fake Second Pick";
+
+console.log(pass
+  ? "\nPASS: picks_made returns real resolved card data (not just a count), matching what Arena's own log already recorded."
+  : "\nFAIL.");
