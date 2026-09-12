@@ -1,7 +1,8 @@
-# Scryfall MCP Server (local, stdio)
+# ManaRamp MCP (local, stdio)
 
-A local MCP server for Magic: The Gathering deck building and MTG Arena play assistance.
-Runs locally over **stdio** — Claude Desktop spawns it as a subprocess, no hosting required.
+A local MCP server for Magic: The Gathering deck building, card research, and MTG Arena play
+assistance. Runs locally over **stdio** — Claude Desktop spawns it as a subprocess, no hosting
+required.
 
 ## Setup (plain JS — no build step)
 
@@ -23,15 +24,15 @@ Add an entry under `mcpServers`:
 ```json
 {
   "mcpServers": {
-    "scryfall": {
+    "manaramp": {
       "command": "node",
-      "args": ["/absolute/path/to/scryfall-mcp/index.js"]
+      "args": ["/absolute/path/to/manaramp-mcp/index.js"]
     }
   }
 }
 ```
 
-Restart Claude Desktop. You should see "scryfall" listed as an available tool source
+Restart Claude Desktop. You should see "manaramp" listed as an available tool source
 (usually a small hammer/tools icon in the chat input). Claude can now call:
 
 ## The 8 tools

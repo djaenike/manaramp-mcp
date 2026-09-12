@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.2",
-  "name": "scryfall-mcp",
+  "name": "manaramp-mcp",
   "version": "1.0.0",
-  "description": "Building magical decks",
+  "description": "Deck building, card research, and MTG Arena assistance for Claude -- ManaRamp",
   "author": {
     "name": "David Jaenike"
   },

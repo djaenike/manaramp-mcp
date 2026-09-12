@@ -25,11 +25,17 @@ It exposes 8 tools:
 - `arena_draft_assistance` / `arena_draft_game_advice` — read MTG Arena's `Player.log` and resolve pack
   contents / match events to real card data for draft-pick and in-game advice.
 
-Playtest-table integration (`extensions/playtest-table`, a companion Cloudflare Worker) and its 5
-`sub-tools/playtest/*`-backed operations (list/create/get-state/load-deck/do-action) are **not** wired
-into any of the 8 tools right now — deliberately. See "Playtest table (currently disabled)" below.
-Nothing under `sub-tools/playtest/` or `extensions/` needs to change for that; the code is intact and
-independently testable, it's just not called from `index.js`.
+Playtest-table integration and its 5 `sub-tools/playtest/*`-backed operations (list/create/get-state/
+load-deck/do-action) are **not** wired into any of the 8 tools right now — deliberately. See "Playtest
+table (currently disabled)" below. `sub-tools/playtest/` doesn't need to change for that; the code is
+intact and independently testable, it's just not called from `index.js`.
+
+This repo used to also hold the playtest-table frontend/Worker itself, at `extensions/playtest-table`
+(SvelteKit + Cloudflare Durable Objects). As of 2026-09-12 it lives in a sibling repo, `manaramp`,
+alongside this one under the same parent folder — the project's direction has shifted enough (see
+that repo's own `CLAUDE.md`) that it no longer made sense to ship it from here. `sub-tools/playtest/*`
+stays in *this* repo regardless of where the Worker lives — it's the MCP-side protocol glue
+(`parsePlaytestDecklist` is already used by both deck tools today), not the Worker itself.
 
 ## Commands
 
@@ -48,7 +54,7 @@ server and exercise a tool through an MCP client (Claude Desktop/Code).
 To connect a local checkout to Claude Desktop for manual testing, add to
 `claude_desktop_config.json` (path in [readme.md](readme.md)):
 ```json
-{ "mcpServers": { "scryfall": { "command": "node", "args": ["/absolute/path/to/index.js"] } } }
+{ "mcpServers": { "manaramp": { "command": "node", "args": ["/absolute/path/to/index.js"] } } }
 ```
 Restart Claude Desktop after any change to `index.js` or any `sub-tools/` file — it does not hot-reload.
 
@@ -70,7 +76,14 @@ that's the only place this information reaches the model.
   `category` field, via `classify.js`, alongside the raw `type_line`), `classify.js` (pure, fetch-free
   `classifyCategory`/`isManaRock`/`isCardDraw`/`isRemoval` — lives at this base layer, not in
   `delivery/`, specifically so both the lookup tools and the final report share one classification
-  instead of two drifting copies). Official, documented API, no key needed.
+  instead of two drifting copies). Official, documented API, no key needed. `scryfallFetch`'s
+  per-category rate-limit pacing (real limits: 2/sec for search/named/random/collection, 10/sec for
+  everything else) is a per-category **promise-chained queue**, not a plain "read last-request-time,
+  sleep, write" check — a real live-draft session showed the latter isn't safe under concurrency:
+  `grpid_resolver.js` fires up to 5 concurrent lookups, and concurrent callers reading the same
+  stale timestamp before any of them wrote it back let them all fire in a near-simultaneous burst,
+  defeating the pacing and tripping Scryfall's real rate limit. See `tests/test_scryfall_pacing.mjs`
+  (asserts 5 concurrent "search"-category calls complete ~520ms apart, not in a burst).
 - `edhrec/` — `client.js` (`slugify()`, EDHREC's URL slug format — no fuzzy matching, an inexact slug
   404s), `recommendations.js` (`getCommanderRecommendations`, used internally by both deck tools for
   commander-fit context; `getCardSynergies`, exposed as the standalone `get_card_synergies` tool;
@@ -137,7 +150,31 @@ that's the only place this information reaches the model.
   calls only process new lines (Arena rewrites `Player.log` from scratch every launch — a size decrease
   is detected as a relaunch and resets state). `grpid_resolver.js` batches `arena_id:<id>` lookups
   through `scryfall/cards.js`'s `search_cards`-equivalent, confirmed live against Scryfall's search
-  syntax. Only Premier/Quick Draft are implemented in `draft_log_parser.js` (not Traditional/Sealed).
+  syntax. `resolveGrpIds` takes an optional `{ cache }` (a plain `Map`) to read/write through and
+  returns `{ cards, errors }` (not a bare `Map` — `errors` is grpId → the actual failure message,
+  for whatever was looked up *this call*). `index.js` keeps one `grpIdCardCache`, shared by BOTH
+  Arena tools (a grpId always maps to the same real card, so this is safe across different
+  drafts/games/log paths, not just within one) — a confirmed miss is cached too, since a genuine
+  404 (e.g. a special-art land print Scryfall's `arena_id` field has no entry for) won't resolve
+  differently on a retry. This cache is **disk-persisted**, not just in-memory: `loadGrpIdCache`/
+  `saveGrpIdCache` read/write `card_cache/grpid_cache.json` (next to `index.js`, via
+  `import.meta.url` like `CARD_RATINGS_DIR` — same "flat file until you set up SQL" stopgap as
+  `card_ratings/`, deliberately, and likewise tracked in git rather than ignored, since unlike
+  `card_ratings.csv`'s evolving win-rate snapshot, a grpId→card mapping is a permanent fact that
+  only ever gets more valuable to keep). `withPersistentGrpIdCache(...)` wraps both Arena tools'
+  resolve calls and writes the file back ONLY when the cache actually grew (no disk I/O on a call
+  that resolved nothing new). This closes a real bug found via a live draft session: without any
+  cache at all, `arena_draft_assistance` re-resolved the ENTIRE pick history from scratch on every
+  single call, so cost (and latency — reported as ~1 min per call by Pack 3) grew without bound as
+  the draft went on; the resulting burst of concurrent Scryfall requests is also what exposed the
+  `scryfallFetch` pacing race described above, causing a handful of grpIds that resolve fine in
+  isolation (confirmed by testing them live afterward) to fail intermittently mid-draft. An
+  in-memory-only cache would have fixed that within one running server process, but silently
+  reset on any restart (computer reboot, Claude Desktop fully quitting, a crash) — hence disk
+  persistence, not just a module-level `Map`. See `tests/test_arena_picks_resolved.mjs` (cache
+  reuse within a process) and `tests/test_grpid_disk_cache.mjs` (survives a fresh process, proven
+  by making the mocked lookup function throw if it's ever called again for a cached id).
+  Only Premier/Quick Draft are implemented in `draft_log_parser.js` (not Traditional/Sealed).
   `gre_match_parser.js` only reports ANNOTATED, CONFIRMED events — an `ActionsAvailableReq` listing a
   legal option is never reported as something that happened, only an actual
   `ZoneTransfer`/`ObjectsSelected`/damage annotation is. Arena's own log records the human's actual
@@ -191,6 +228,18 @@ that's the only place this information reaches the model.
 `index.js` keeps its own per-`player_log_path` session maps (`draftSessions`/`matchSessions`) so the two
 Arena tools' offset/state persists *across* separate tool calls within one running server process (each
 pick / each poll is its own MCP call).
+
+Both Arena tools' `player_log_path` param is **optional**, backed by `sub-tools/arena-log/settings.js`
+(`loadSettings`/`saveSettings`, a generic path-keyed JSON store — deliberately generic, not
+Arena-specific, so it's reusable for any future "remember this on disk" need) writing to
+`arena_settings.json` next to `index.js` (gitignored — it's a real absolute path on the user's specific
+machine, unlike `card_ratings/`/`card_cache/`, which are portable and tracked). `resolvePlayerLogPath`
+in `index.js` is the glue: an explicitly-given path always wins and gets saved; an omitted one falls
+back to whatever was last remembered. This fixes a real, reported annoyance — Claude has no memory of
+a *prior conversation's* tool-call arguments, so without server-side persistence the user had to retype
+the same path every single new conversation, even the day right after already giving it once. See
+`tests/test_settings_persistence.mjs` (proves a value survives a fresh load, simulating a new
+conversation with nothing shared in memory).
 
 ## Deck delivery pipeline
 
@@ -250,18 +299,19 @@ don't match.
 
 ## Playtest table (currently disabled)
 
-`extensions/playtest-table` (SvelteKit + Cloudflare Durable Objects, deployed as a real Cloudflare
-Worker) and `sub-tools/playtest/*` are untouched and fully intact, but **not called from any of the 4
-tools right now** — the playtest server needs more work, and the current focus is the core MCP
-structure/delivery pipeline. `delivery/create_playtest_room.js` (the room-creation + deck-load glue)
-still exists and works standalone but is not imported by `index.js`.
+The playtest-table Worker itself now lives in the sibling `manaramp` repo (see "What this is" above),
+not in this one. `sub-tools/playtest/*` (this repo's MCP-side protocol glue) is untouched and fully
+intact, but **not called from any of the 8 tools right now** — the playtest server needs more work,
+and the current focus here is the core MCP structure/delivery pipeline plus the shared MongoDB card
+database (see `mongo_schema/`, not wired in yet either). `delivery/create_playtest_room.js` (the
+room-creation + deck-load glue) still exists and works standalone but is not imported by `index.js`.
 
-Re-enabling it later is a small, localized change: import `createPlaytestRoom` in `index.js` and add a
-step to `runChecksAndDeliver` after report-building (e.g. threading a `room_url` into `actualOutput`/the
-rendered HTML) — the rest of the pipeline's shape is unaffected. See `extensions/README.md` for the full
-autonomous-play design (an AI-controlled seat's turns are driven by the Worker's own Durable Object alarm
-calling the Anthropic API directly, not by this MCP server or any Claude conversation) if/when that work
-resumes.
+Re-enabling it later is a small, localized change on this side: import `createPlaytestRoom` in
+`index.js` and add a step to `runChecksAndDeliver` after report-building (e.g. threading a `room_url`
+into `actualOutput`/the rendered HTML) — the rest of the pipeline's shape is unaffected. See the
+`manaramp` repo's own docs for the full autonomous-play design (an AI-controlled seat's turns are
+driven by the Worker's own Durable Object alarm calling the Anthropic API directly, not by this MCP
+server or any Claude conversation) if/when that work resumes.
 
 (Future, not for this pass: a paywall gate in front of the playtest link for non-paying users, once
 playtest is re-enabled — noted here as context for later planning, nothing to build against yet.)

@@ -1,5 +1,5 @@
 {
-  "name": "scryfall-mcp",
+  "name": "manaramp-mcp",
   "version": "1.0.0",
   "type": "module",
   "main": "index.js",
