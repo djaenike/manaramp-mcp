@@ -42,6 +42,11 @@ async function searchCards(query, max_price_usd) {
     type_line: c.type_line,
     category: classifyCategory(c.type_line),
     oracle_text: c.oracle_text,
+    // DFCs carry these on card_faces[0] instead of the top level -- same fallback pattern
+    // consistency.js already uses for mana_cost/oracle_text.
+    power: c.power ?? c.card_faces?.[0]?.power ?? null,
+    toughness: c.toughness ?? c.card_faces?.[0]?.toughness ?? null,
+    loyalty: c.loyalty ?? c.card_faces?.[0]?.loyalty ?? null,
     usd: c.prices?.usd ?? "N/A",
     legal_commander: c.legalities?.commander,
     legal_standard: c.legalities?.standard,
@@ -64,6 +69,9 @@ async function getCardByName(name) {
     type_line: c.type_line,
     category: classifyCategory(c.type_line),
     oracle_text: c.oracle_text,
+    power: c.power ?? c.card_faces?.[0]?.power ?? null,
+    toughness: c.toughness ?? c.card_faces?.[0]?.toughness ?? null,
+    loyalty: c.loyalty ?? c.card_faces?.[0]?.loyalty ?? null,
     usd: c.prices?.usd ?? "N/A",
     legalities: c.legalities,
     set: c.set_name,

@@ -47,7 +47,7 @@ console.log("pickedCards (raw grpIds):", state.pickedCards);
 // Mirrors index.js's arena_draft_assistance handler exactly: one combined resolveGrpIds call.
 const currentPackIds = state.currentPack.map((id) => parseInt(id, 10));
 const pickedCardIds = state.pickedCards.map((id) => parseInt(id, 10));
-const resolved = await resolveGrpIds([...currentPackIds, ...pickedCardIds], fakeSearchCards);
+const { cards: resolved } = await resolveGrpIds([...currentPackIds, ...pickedCardIds], fakeSearchCards);
 const resolveOne = (id) => {
   const card = resolved.get(parseInt(id, 10));
   return card ? card[0] ?? card : { grpId: id, card: null };
@@ -65,3 +65,31 @@ const pass = state.pickedCards.length === 1
 console.log(pass
   ? "\nPASS: picks_made returns real resolved card data (not just a count), matching what Arena's own log already recorded."
   : "\nFAIL.");
+
+// --- Real-draft bug regression: a shared cache must stop re-resolving already-seen grpIds -----
+// This is the actual root cause found from a live draft session (see grpid_resolver.js's header
+// comment): without a cross-call cache, every call re-resolved the ENTIRE pick history from
+// scratch, which is what made later-draft calls progressively slower and also tripped Scryfall's
+// rate limit under the resulting load. Simulates two successive "next pack" calls sharing one
+// cache, the way index.js's grpIdCardCache is shared across calls for one process's lifetime.
+let searchCallCount = 0;
+async function countingSearchCards(query) {
+  searchCallCount++;
+  return fakeSearchCards(query);
+}
+
+const sharedCache = new Map();
+await resolveGrpIds([70000, 70001], countingSearchCards, { cache: sharedCache });
+const callsAfterFirstResolve = searchCallCount;
+
+// "Next call": re-resolve the SAME two grpIds plus one genuinely new one, sharing the cache.
+await resolveGrpIds([70000, 70001, 70002], countingSearchCards, { cache: sharedCache });
+const newCallsOnSecondResolve = searchCallCount - callsAfterFirstResolve;
+
+console.log("search calls for first resolve (2 new ids):", callsAfterFirstResolve);
+console.log("search calls for second resolve (2 cached + 1 new id):", newCallsOnSecondResolve);
+
+const cachePass = callsAfterFirstResolve === 2 && newCallsOnSecondResolve === 1;
+console.log(cachePass
+  ? "PASS: a shared cache resolves only genuinely new grpIds on a later call, not the whole pick history again."
+  : "FAIL: cache did not avoid re-resolving already-seen grpIds.");

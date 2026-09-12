@@ -15,6 +15,15 @@ const SCRYFALL_BASE = "https://api.scryfall.com";
 const SCRYFALL_MIN_INTERVAL_MS = { search: 520, named: 520, random: 520, collection: 520, default: 110 };
 const scryfallLastRequestAt = { search: 0, named: 0, random: 0, collection: 0, default: 0 };
 
+// Real-world bug found via a live draft session: grpid_resolver.js fires several concurrent
+// searches (concurrency 5), and a plain "read last-request-time, sleep, then write" pacing check
+// is NOT safe under concurrency -- multiple concurrent callers can all read the same stale
+// timestamp before any of them writes it back, so they all compute the same wait and then all
+// fire at once, defeating the pacing entirely and tripping Scryfall's real rate limit. A
+// per-category promise chain serializes just the "wait your turn, then stamp" gate itself (not
+// the actual fetch), so concurrent callers queue through it one at a time instead of racing.
+const scryfallPacingQueue = { search: Promise.resolve(), named: Promise.resolve(), random: Promise.resolve(), collection: Promise.resolve(), default: Promise.resolve() };
+
 // Scryfall requires an accurate User-Agent and an Accept header on every request
 const HEADERS = {
   "User-Agent": "scryfall-mcp/1.0 (personal project)",
@@ -26,9 +35,16 @@ const HEADERS = {
 // coordinates separate tool calls fired back-to-back, not just chunks within one call.
 async function scryfallFetch(url, options, category = "default") {
   const minInterval = SCRYFALL_MIN_INTERVAL_MS[category] ?? SCRYFALL_MIN_INTERVAL_MS.default;
-  const waitMs = scryfallLastRequestAt[category] + minInterval - Date.now();
-  if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
-  scryfallLastRequestAt[category] = Date.now();
+
+  const mySlot = scryfallPacingQueue[category].then(async () => {
+    const waitMs = scryfallLastRequestAt[category] + minInterval - Date.now();
+    if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+    scryfallLastRequestAt[category] = Date.now();
+  });
+  // Keep the queue alive even if something upstream throws -- a rejected link would otherwise
+  // permanently wedge every later caller waiting on this category.
+  scryfallPacingQueue[category] = mySlot.catch(() => {});
+  await mySlot;
 
   const res = await fetch(url, options);
   if (res.status === 429) {

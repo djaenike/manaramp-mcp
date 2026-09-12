@@ -1,10 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
+import { randomUUID } from "crypto";
 
 // --- All 20 original tools' implementations now live under sub-tools/, grouped by
 // concern rather than by original tool name. Nothing was removed -- every function
@@ -36,10 +37,11 @@ import { DraftScanner } from "./sub-tools/arena-log/draft_log_parser.js";
 import { extractGreEvents, buildMatchTimeline, createMatchState } from "./sub-tools/arena-log/gre_match_parser.js";
 import { enrichTimeline, resolveGrpIds } from "./sub-tools/arena-log/grpid_resolver.js";
 import { loadCardRatings, findLatestCsvInDir } from "./sub-tools/arena-log/card_ratings.js";
+import { loadSettings, saveSettings } from "./sub-tools/arena-log/settings.js";
 
 // Create the MCP server instance
 const server = new McpServer({
-  name: "scryfall-mcp",
+  name: "manaramp-mcp",
   version: "2.0.0",
 });
 
@@ -52,6 +54,103 @@ const server = new McpServer({
 const draftSessions = new Map();   // path -> { reader: LogReader, scanner: DraftScanner }
 const matchSessions = new Map();   // path -> { reader: LogReader, state: matchState }
 const cardRatingsCache = new Map(); // csv path -> Map<lowercased card name, 17Lands rating row>
+
+// --- grpId -> card cache, persisted to disk ------------------------------------------------
+// A grpId always maps to the same real card (or, for a genuine miss, permanently maps to nothing)
+// -- that's a fact about Scryfall's data, not about any one draft/game/session, so it's safe (and
+// valuable) to cache forever, not just for one process's lifetime. Real-draft bug fix: without
+// ANY cache, arena_draft_assistance re-resolved every previously-picked card on every single call
+// (cost growing without bound as the draft went on), which is what actually caused both the "gets
+// steadily slower" symptom and several transient lookup failures under the resulting request
+// burst (see grpid_resolver.js's header comment for the full story). An in-memory-only Map fixes
+// that within one running server process, but a restart (computer reboot, Claude Desktop fully
+// quitting, an MCP server crash) would silently wipe it and go back to fetching everything fresh
+// -- so this is backed by a JSON file next to this server (like card_ratings/) that only ever
+// grows, shared by BOTH Arena tools and every draft/game/log path this server ever sees. Same
+// "flat file until you set up SQL" stopgap as card_ratings/, deliberately.
+const CARD_CACHE_DIR = join(dirname(fileURLToPath(import.meta.url)), "card_cache");
+const GRPID_CACHE_PATH = join(CARD_CACHE_DIR, "grpid_cache.json");
+
+function loadGrpIdCache() {
+  const cache = new Map();
+  try {
+    const raw = JSON.parse(readFileSync(GRPID_CACHE_PATH, "utf8"));
+    for (const [grpId, card] of Object.entries(raw)) {
+      cache.set(Number(grpId), card);
+    }
+  } catch {
+    // No cache file yet (first run) or it's unreadable -- start empty. This is a derived,
+    // fully-rebuildable cache; a missing/corrupt file is never a reason to fail startup.
+  }
+  return cache;
+}
+
+function saveGrpIdCache(cache) {
+  try {
+    mkdirSync(CARD_CACHE_DIR, { recursive: true });
+    writeFileSync(GRPID_CACHE_PATH, JSON.stringify(Object.fromEntries(cache), null, 2));
+  } catch {
+    // Best-effort -- a failed disk write shouldn't break the response; the in-memory cache still
+    // helps for the rest of this process's life either way.
+  }
+}
+
+const grpIdCardCache = loadGrpIdCache();
+
+// --- Locally-remembered settings (machine-specific -- gitignored, unlike card_ratings/ or
+// card_cache/) ---------------------------------------------------------------------------------
+// player_log_path is a real absolute path on THIS machine specifically -- it has no business
+// being committed to git (it wouldn't even be valid on a different computer). Remembering it
+// here fixes a real recurring annoyance: Claude has no memory of a PRIOR conversation's tool-call
+// arguments, so without server-side persistence the user has to retype this same path every
+// single new conversation, even the day right after they already gave it once.
+// SCRYFALL_MCP_SETTINGS_PATH override exists so tests never read/write the real settings file
+// (same reasoning as SCRYFALL_MCP_REPORTS_DIR above).
+const SETTINGS_PATH = process.env.SCRYFALL_MCP_SETTINGS_PATH || join(dirname(fileURLToPath(import.meta.url)), "arena_settings.json");
+
+/**
+ * Resolves player_log_path for a call: whatever was explicitly passed wins (and gets remembered
+ * for next time); otherwise falls back to whatever was last remembered. Returns null if neither
+ * is available (first-ever call, nothing provided).
+ */
+function resolvePlayerLogPath(providedPath) {
+  if (providedPath) {
+    if (providedPath !== loadSettings(SETTINGS_PATH).player_log_path) {
+      saveSettings(SETTINGS_PATH, { player_log_path: providedPath });
+    }
+    return providedPath;
+  }
+  return loadSettings(SETTINGS_PATH).player_log_path ?? null;
+}
+
+/**
+ * Returns a stable, anonymous per-install identifier (for the not-yet-built shared MongoDB
+ * contribution scheme, see mongo_schema/schema.js's draft_sessions.user_id) -- generated once
+ * and persisted in the same arena_settings.json this whole file already uses for
+ * player_log_path, then reused forever after. There's no "on install" hook in the .mcpb/desktop
+ * extension format itself (checked the manifest spec directly -- it's purely declarative, no
+ * lifecycle scripts), so this is triggered by first actual need rather than the literal install
+ * moment; the practical result is identical either way, since nothing observable depends on
+ * WHEN it's generated, only that it stays the same after. Deliberately anonymous (a random UUID,
+ * not tied to any real identity) -- see the open trust-model question already flagged in
+ * mongo_schema/schema.js's draft_sessions comment before this is wired into anything that writes
+ * to a shared database for real.
+ */
+function getOrCreateUserId() {
+  const existing = loadSettings(SETTINGS_PATH).user_id;
+  if (existing) return existing;
+  const userId = randomUUID();
+  saveSettings(SETTINGS_PATH, { user_id: userId });
+  return userId;
+}
+
+/** Runs a grpId-resolving call, then persists the cache to disk ONLY if it actually grew. */
+async function withPersistentGrpIdCache(resolveFn) {
+  const sizeBefore = grpIdCardCache.size;
+  const result = await resolveFn(grpIdCardCache);
+  if (grpIdCardCache.size > sizeBefore) saveGrpIdCache(grpIdCardCache);
+  return result;
+}
 
 function getDraftSession(path) {
   if (!draftSessions.has(path)) {
@@ -500,6 +599,12 @@ server.tool(
   "Support)' enabled in Arena's settings and a full relaunch after enabling it. Call this again " +
   "after each pick to see the next pack -- offset/state for a given player_log_path persists " +
   "across calls within this session, so each call only processes what's new since the last one. " +
+  "player_log_path is remembered on disk once given, so it's genuinely optional after the first " +
+  "call in this server's lifetime, including in a brand-new conversation later -- omit it and the " +
+  "last one the user gave (in this or a past conversation) is reused automatically; only pass it " +
+  "again if the user gives a different path or this is truly the first time. If it's never been " +
+  "given at all, the response will say so plainly -- ask the user for it once, rather than " +
+  "guessing a path. " +
   "Supports Premier and Quick Draft; Traditional Draft and Sealed are not yet implemented (see " +
   "draft_log_parser.js). picks_made is the full resolved list of every card picked so far this " +
   "draft (Arena's own log records the actual pick the moment it's made in-client -- you don't need " +
@@ -524,12 +629,20 @@ server.tool(
   "doesn't, an unweighted difference so a large iih on a small sample can overstate a rare card's " +
   "value -- check it against gih for sample size; null fields mean too small a sample, not a bad " +
   "card). Use those numbers alongside oracle text when they're present; without " +
-  "card_ratings_csv_path, fall back to reasoning over real card text/mana costs alone.",
+  "card_ratings_csv_path, fall back to reasoning over real card text/mana costs alone. A card in " +
+  "current_pack/picks_made with card: null failed to resolve -- check unresolved_cards for that " +
+  "grpId's actual failure reason (e.g. a genuine Scryfall 404 for an oddball print/land variant, " +
+  "vs. a transient error) rather than treating every null the same way.",
   {
-    player_log_path: z.string().describe("Absolute path to Arena's Player.log, e.g. 'C:\\\\Users\\\\<name>\\\\AppData\\\\LocalLow\\\\Wizards Of The Coast\\\\MTGA\\\\Player.log'"),
+    player_log_path: z.string().optional().describe("Absolute path to Arena's Player.log, e.g. 'C:\\\\Users\\\\<name>\\\\AppData\\\\LocalLow\\\\Wizards Of The Coast\\\\MTGA\\\\Player.log'. Optional after the first time it's ever given -- it's remembered on disk and reused automatically, including in later conversations."),
     card_ratings_csv_path: z.string().optional().describe("Absolute path to a card_ratings CSV the user manually exported from 17lands.com/card_ratings. Optional -- omit this to auto-use whatever CSV (if any) is dropped in this server's card_ratings/ folder; only pass this to point at a file somewhere else instead."),
   },
-  async ({ player_log_path, card_ratings_csv_path }) => {
+  async ({ player_log_path: providedLogPath, card_ratings_csv_path }) => {
+    const player_log_path = resolvePlayerLogPath(providedLogPath);
+    if (!player_log_path) {
+      return { content: [{ type: "text", text: "No player_log_path given, and none remembered from a previous call. Ask the user for the absolute path to Arena's Player.log (e.g. 'C:\\Users\\<name>\\AppData\\LocalLow\\Wizards Of The Coast\\MTGA\\Player.log') -- once given, it'll be remembered automatically and won't need to be provided again." }] };
+    }
+
     const session = getDraftSession(player_log_path);
     let lines, sessionReset;
     try {
@@ -550,7 +663,12 @@ server.tool(
     // not just how many picks have happened.
     const currentPackIds = state.currentPack.map((id) => parseInt(id, 10)).filter((n) => !isNaN(n));
     const pickedCardIds = state.pickedCards.map((id) => parseInt(id, 10)).filter((n) => !isNaN(n));
-    const resolved = await resolveGrpIds([...currentPackIds, ...pickedCardIds], searchCardsForResolver);
+    // grpIdCardCache is shared and disk-persisted (see its own declaration comment) -- every
+    // previously-resolved pick costs nothing here now, only genuinely new grpIds hit Scryfall,
+    // and that stays true even across a server restart.
+    const { cards: resolved, errors: resolveErrors } = await withPersistentGrpIdCache((cache) =>
+      resolveGrpIds([...currentPackIds, ...pickedCardIds], searchCardsForResolver, { cache })
+    );
 
     const resolvedRatingsPath = card_ratings_csv_path || findLatestCsvInDir(CARD_RATINGS_DIR);
     let cardRatings = null;
@@ -590,6 +708,11 @@ server.tool(
           current_pack: enrichedPack,
           picks_made: picksMade,
           picks_made_so_far: picksMade.length,
+          // Only entries actually looked up THIS call appear here (a cached miss from an earlier
+          // call won't re-report its reason -- see grpid_resolver.js) -- distinguishes a real,
+          // permanent gap (e.g. a Scryfall arena_id 404 for an oddball print/land variant) from
+          // "not attempted this call," rather than both silently collapsing into `card: null`.
+          unresolved_cards: Array.from(resolveErrors, ([grpId, error]) => ({ grpId, error })),
           card_ratings_source: !resolvedRatingsPath
             ? `No card ratings loaded -- drop a 17Lands card_ratings CSV export into ${CARD_RATINGS_DIR} (or pass card_ratings_csv_path) for real win-rate/signal data.`
             : cardRatingsError
@@ -616,11 +739,19 @@ server.tool(
   "calls, so each call only returns what's new. Only ANNOTATED, CONFIRMED events are reported (an " +
   "ActionsAvailableReq listing a legal option is never reported as something that happened -- only " +
   "an actual ZoneTransfer/ObjectsSelected/damage annotation is). This tool only supplies data -- it " +
-  "does not give advice directly; reason over the returned timeline to actually advise on the game.",
+  "does not give advice directly; reason over the returned timeline to actually advise on the game. " +
+  "player_log_path is remembered on disk once given (shared with arena_draft_assistance), so it's " +
+  "genuinely optional after the first time -- omit it and the last one given (in this or a past " +
+  "conversation) is reused automatically.",
   {
-    player_log_path: z.string().describe("Absolute path to Arena's Player.log"),
+    player_log_path: z.string().optional().describe("Absolute path to Arena's Player.log. Optional after the first time it's ever given -- remembered on disk and reused automatically, including in later conversations."),
   },
-  async ({ player_log_path }) => {
+  async ({ player_log_path: providedLogPath }) => {
+    const player_log_path = resolvePlayerLogPath(providedLogPath);
+    if (!player_log_path) {
+      return { content: [{ type: "text", text: "No player_log_path given, and none remembered from a previous call. Ask the user for the absolute path to Arena's Player.log -- once given, it'll be remembered automatically and won't need to be provided again." }] };
+    }
+
     const session = getMatchSession(player_log_path);
     let lines, sessionReset;
     try {
@@ -636,7 +767,12 @@ server.tool(
     const { timeline, state: updatedState } = buildMatchTimeline(events, session.state);
     session.state = updatedState;
 
-    const enrichedTimeline = await enrichTimeline(timeline, searchCardsForResolver);
+    // Shares the same disk-persisted grpIdCardCache as arena_draft_assistance -- a card drafted
+    // earlier (or seen earlier this same match, even in a past session) needs zero extra Scryfall
+    // calls to resolve here.
+    const enrichedTimeline = await withPersistentGrpIdCache((cache) =>
+      enrichTimeline(timeline, searchCardsForResolver, { cache })
+    );
 
     return {
       content: [{
@@ -667,4 +803,4 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
 }
 
 // Exported for tests only -- not part of the MCP tool surface.
-export { runChecksAndDeliver };
+export { runChecksAndDeliver, getOrCreateUserId, resolvePlayerLogPath };

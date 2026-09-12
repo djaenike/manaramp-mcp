@@ -16,20 +16,23 @@ import { parsePlaytestDecklist } from "../sub-tools/playtest/state.js";
 import { listGames, createTable } from "../sub-tools/playtest/lobby.js";
 import { getState, loadDeck, doAction } from "../sub-tools/playtest/actions.js";
 import { parseCardRatingsCsv, loadCardRatings } from "../sub-tools/arena-log/card_ratings.js";
+import { loadSettings, saveSettings } from "../sub-tools/arena-log/settings.js";
 import { LogReader } from "../sub-tools/arena-log/log_reader.js";
 import { DraftScanner } from "../sub-tools/arena-log/draft_log_parser.js";
 import { extractGreEvents, buildMatchTimeline, createMatchState } from "../sub-tools/arena-log/gre_match_parser.js";
 import { enrichTimeline, resolveGrpIds } from "../sub-tools/arena-log/grpid_resolver.js";
 
 process.argv[1] = "/nonexistent"; // ensures the import.meta.url guard skips server.connect()
-const { runChecksAndDeliver } = await import("../index.js");
+const { runChecksAndDeliver, getOrCreateUserId, resolvePlayerLogPath } = await import("../index.js");
 
 const all = { searchCards, getCardByName, getRulings, getCommanderRecommendations, getCardSynergies,
   getAverageDecklist, getCardScript, getCardKingdomPrice, computeDeckPriceTotal, findCombos,
   computeBracketRating, buildDeckByPrice, computeDeckConsistency, getMoxfieldDecklist,
   classifyCategory, isManaRock, isCardDraw, isRemoval, fetchImageAsDataUri, inlineCardImages,
   buildActualOutput, renderDeckReportHtml, createPlaytestRoom, parseCardRatingsCsv, loadCardRatings,
+  loadSettings, saveSettings,
   parsePlaytestDecklist, listGames, createTable, getState, loadDeck, doAction, runChecksAndDeliver,
+  getOrCreateUserId, resolvePlayerLogPath,
   LogReader, DraftScanner, extractGreEvents, buildMatchTimeline, createMatchState, enrichTimeline, resolveGrpIds };
 
 let allGood = true;
