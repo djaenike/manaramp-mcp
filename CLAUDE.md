@@ -303,8 +303,11 @@ The playtest-table Worker itself now lives in the sibling `manaramp` repo (see "
 not in this one. `sub-tools/playtest/*` (this repo's MCP-side protocol glue) is untouched and fully
 intact, but **not called from any of the 8 tools right now** — the playtest server needs more work,
 and the current focus here is the core MCP structure/delivery pipeline plus the shared MongoDB card
-database (see `mongo_schema/`, not wired in yet either). `delivery/create_playtest_room.js` (the
-room-creation + deck-load glue) still exists and works standalone but is not imported by `index.js`.
+database. This repo has no copy of that schema (see the `manaramp` repo's `src/lib/server/schema/`)
+— the MCP only ever reaches it over HTTP, via `manaramp.com`, never a direct Mongo connection, so it
+has no need for the database's own validator schema (see that repo's CLAUDE.md for the reasoning).
+`delivery/create_playtest_room.js` (the room-creation + deck-load glue) still exists and works
+standalone but is not imported by `index.js`.
 
 Re-enabling it later is a small, localized change on this side: import `createPlaytestRoom` in
 `index.js` and add a step to `runChecksAndDeliver` after report-building (e.g. threading a `room_url`

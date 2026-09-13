@@ -125,16 +125,16 @@ function resolvePlayerLogPath(providedPath) {
 
 /**
  * Returns a stable, anonymous per-install identifier (for the not-yet-built shared MongoDB
- * contribution scheme, see mongo_schema/schema.js's draft_sessions.user_id) -- generated once
- * and persisted in the same arena_settings.json this whole file already uses for
- * player_log_path, then reused forever after. There's no "on install" hook in the .mcpb/desktop
- * extension format itself (checked the manifest spec directly -- it's purely declarative, no
- * lifecycle scripts), so this is triggered by first actual need rather than the literal install
- * moment; the practical result is identical either way, since nothing observable depends on
- * WHEN it's generated, only that it stays the same after. Deliberately anonymous (a random UUID,
- * not tied to any real identity) -- see the open trust-model question already flagged in
- * mongo_schema/schema.js's draft_sessions comment before this is wired into anything that writes
- * to a shared database for real.
+ * contribution scheme -- see the `manaramp` repo's src/lib/server/schema/draft_sessions.ts,
+ * the schema's one canonical copy) -- generated once and persisted in the same
+ * arena_settings.json this whole file already uses for player_log_path, then reused forever
+ * after. There's no "on install" hook in the .mcpb/desktop extension format itself (checked the
+ * manifest spec directly -- it's purely declarative, no lifecycle scripts), so this is triggered
+ * by first actual need rather than the literal install moment; the practical result is identical
+ * either way, since nothing observable depends on WHEN it's generated, only that it stays the
+ * same after. Deliberately anonymous (a random UUID, not tied to any real identity) -- see the
+ * open trust-model question already flagged in that schema file's own comment before this is
+ * wired into anything that writes to a shared database for real.
  */
 function getOrCreateUserId() {
   const existing = loadSettings(SETTINGS_PATH).user_id;
