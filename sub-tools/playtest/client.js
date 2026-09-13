@@ -1,8 +1,10 @@
 /**
  * sub-tools/playtest/client.js
- * extensions/playtest-table — a SEPARATE server (SvelteKit + Cloudflare Durable
- * Objects), not part of this MCP process. Override PLAYTEST_SERVER_URL to point
- * at a local `npx wrangler dev --port 8787` instead.
+ * The playtest table is a SEPARATE server (SvelteKit + Cloudflare Durable Objects), not part of
+ * this MCP process -- it lives in the sibling `manaramp` repo (previously extensions/playtest-table
+ * inside this repo; moved out when the two projects split, see CLAUDE.md). Override
+ * PLAYTEST_SERVER_URL to point at a local `npx wrangler dev --port 8787` (run from the `manaramp`
+ * repo) instead of the deployed default below.
  */
 
 const PLAYTEST_BASE = process.env.PLAYTEST_SERVER_URL || "https://scryfall-mcp.playtest-table.workers.dev";
@@ -22,7 +24,7 @@ async function playtestFetch(path, options) {
   } catch (e) {
     throw new Error(
       `Could not reach the playtest server at ${PLAYTEST_BASE} — make sure ` +
-      `\`npx wrangler dev\` is running in extensions/playtest-table. (${e.message || e})`
+      `\`npx wrangler dev\` is running in the manaramp repo (npm run preview, or wrangler dev --port 8787). (${e.message || e})`
     );
   }
 }
@@ -40,7 +42,7 @@ function connectRoom(roomId, timeoutMs = PLAYTEST_TIMEOUT_MS) {
     };
     const timer = setTimeout(() => fail(
       `Could not reach the playtest server at ${PLAYTEST_BASE} within ${timeoutMs}ms — ` +
-      `make sure \`npx wrangler dev\` is running in extensions/playtest-table.`
+      `make sure \`npx wrangler dev\` is running in the manaramp repo (npm run preview, or wrangler dev --port 8787).`
     ), timeoutMs);
     ws.addEventListener("open", () => {
       if (settled) return;
@@ -50,7 +52,7 @@ function connectRoom(roomId, timeoutMs = PLAYTEST_TIMEOUT_MS) {
     });
     ws.addEventListener("error", (e) => fail(
       `Could not reach the playtest server at ${PLAYTEST_BASE} — make sure ` +
-      `\`npx wrangler dev\` is running in extensions/playtest-table. (${e.message || e})`
+      `\`npx wrangler dev\` is running in the manaramp repo (npm run preview, or wrangler dev --port 8787). (${e.message || e})`
     ));
   });
 }
