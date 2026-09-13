@@ -1,18 +1,17 @@
 /**
- * schema/card.js
+ * schema/cards.js
  *
  * Shared MongoDB card cache: every install contributes resolved card data, so lookups shrink over
  * time instead of re-querying Scryfall/EDHREC/17Lands/Forge/Card Kingdom from scratch every time.
  * Design only -- not wired into index.js yet.
  *
- * `cards`: one document per Scryfall oracle_id (not name -- reprints/promos can share a name; not
- * Arena's grpId -- one card can have several). Permanent facts and time-varying data (market_data,
- * format_stats) live on the same document since Mongo has no cheap joins. No TTL index -- that
- * would delete the whole document (oracle text included) just to expire a price. Staleness is an
- * app-level check instead: isStale() below, against fetched_at/as_of.
+ * One document per Scryfall oracle_id (not name -- reprints/promos can share a name; not Arena's
+ * grpId -- one card can have several). Permanent facts and time-varying data (market_data,
+ * format_stats) live on the same document since Mongo has no cheap joins. No TTL index -- see
+ * schema/staleness.js for why; check isStale() from there before trusting market_data/format_stats.
  *
- * `draft_sessions`: separate collection, live per-user Arena draft state, kept apart from `cards`
- * since it's session state, not card reference data.
+ * Mirrored at manaramp/src/lib/server/schema/cards.ts -- keep both in sync (see that file's own
+ * header) until this lives in one repo only.
  */
 
 const CARDS = {
@@ -54,10 +53,10 @@ const CARDS = {
       properties: { script: { bsonType: "string" }, fetched_at: { bsonType: "date" } },
     },
 
-    // Time-varying -- check isStale() before trusting.
+    // Time-varying -- check isStale() (schema/staleness.js) before trusting.
     market_data: {
       bsonType: ["object", "null"],
-      description: "Keyed by source. isStale(fetched_at, STALENESS_DAYS.market_data) before trusting.",
+      description: "Keyed by source. isStale(fetched_at, CARD_STALENESS_DAYS.market_data) before trusting.",
       properties: {
         cardkingdom: {
           bsonType: ["object", "null"],
@@ -71,7 +70,7 @@ const CARDS = {
     },
     format_stats: {
       bsonType: "array",
-      description: "One entry per (set_code, format) -- win rate only means something within one environment. isStale(as_of, STALENESS_DAYS.format_stats) before trusting. 17Lands metrics; null means too small a sample, not a bad card.",
+      description: "One entry per (set_code, format) -- win rate only means something within one environment. isStale(as_of, CARD_STALENESS_DAYS.format_stats) before trusting. 17Lands metrics; null means too small a sample, not a bad card.",
       items: {
         bsonType: "object",
         required: ["set_code", "format", "as_of"],
@@ -97,62 +96,4 @@ const CARDS = {
   },
 };
 
-const STALENESS_DAYS = {
-  market_data: 7,   // prices move fast
-  format_stats: 30, // 17Lands numbers settle after a set's first couple weeks
-};
-
-/** Present-but-stale must be treated like absent (re-fetch), never served as current. */
-function isStale(timestamp, maxAgeDays) {
-  if (!timestamp) return true;
-  const ageMs = Date.now() - new Date(timestamp).getTime();
-  return ageMs > maxAgeDays * 24 * 60 * 60 * 1000;
-}
-
-const DRAFT_SESSIONS = {
-  bsonType: "object",
-  required: ["_id", "user_id", "set_code", "format", "started_at"],
-  properties: {
-    _id: { bsonType: "string", description: "Arena's own draft_id from the log." },
-    user_id: { bsonType: "string", description: "Anonymous per-install UUID (index.js getOrCreateUserId)." },
-    event_name: { bsonType: "string" },
-    set_code: { bsonType: "string" },
-    format: { bsonType: "string" },
-    started_at: { bsonType: "date" },
-    updated_at: { bsonType: "date" },
-    picks: {
-      bsonType: "array",
-      description: "Full pick history, in order.",
-      items: {
-        bsonType: "object",
-        properties: {
-          pack_number: { bsonType: "int" },
-          pick_number: { bsonType: "int" },
-          grp_id: { bsonType: "int" },
-          oracle_id: { bsonType: ["string", "null"] },
-          picked_at: { bsonType: "date" },
-        },
-      },
-    },
-    current_pack: {
-      bsonType: ["object", "null"],
-      properties: {
-        pack_number: { bsonType: "int" },
-        pick_number: { bsonType: "int" },
-        grp_ids: { bsonType: "array", items: { bsonType: "int" } },
-      },
-    },
-  },
-};
-
-const INDEXES = [
-  { collection: "cards", keys: { color_identity: 1, cmc: 1, category: 1 } },
-  { collection: "cards", keys: { "legalities.commander": 1 } },
-  { collection: "cards", keys: { arena_grp_ids: 1 }, note: "Multikey -- resolves a whole pack in one query." },
-  { collection: "cards", keys: { name: 1 }, note: "Not unique -- different oracle_ids can share a printed name." },
-  { collection: "cards", keys: { "format_stats.set_code": 1, "format_stats.format": 1 } },
-  { collection: "cards", keys: { "format_stats.set_code": 1, "format_stats.format": 1, "format_stats.games_in_hand_win_rate": -1 }, note: "'Best cards in this format' queries." },
-  { collection: "draft_sessions", keys: { user_id: 1, started_at: -1 }, note: "A user's most recent draft." },
-];
-
-export { CARDS, DRAFT_SESSIONS, INDEXES, STALENESS_DAYS, isStale };
+export { CARDS };

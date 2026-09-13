@@ -1,9 +1,9 @@
 /**
- * schema/commander_synergy.js
+ * schema/commander_synergies.js
  *
  * EDHREC's commander-relative data -- recommended cards, synergy scores, average decklist -- as
- * its own collection, keyed by commander. Not folded into card.js's `cards`, mirroring combo.js: a
- * synergy score is a fact about a (commander, card) PAIR (Rhystic Study's synergy differs by
+ * its own collection, keyed by commander. Not folded into cards.js's `cards`, mirroring combos.js:
+ * a synergy score is a fact about a (commander, card) PAIR (Rhystic Study's synergy differs by
  * commander), not something one card document can hold. Design only -- not wired into index.js yet.
  *
  * Covers all three of recommendations.js's commander-keyed functions
@@ -15,21 +15,13 @@
  * share one slug per EDHREC's own convention.
  *
  * Resolution, checked live (2026-09-13): `recommended_cards` gets a real Scryfall id from EDHREC,
- * but it's the per-PRINTING id, not oracle_id (confirmed by cross-checking against Scryfall
- * directly) -- needs one deterministic printing-id -> oracle_id lookup, not name matching.
- * `average_decklist` is genuinely name-only (bare [name, qty] tuples) -- real fuzzy resolution
- * against cards.name is needed there, and can fail; oracle_id stays null rather than dropping the
- * entry.
+ * but it's the per-PRINTING id, not oracle_id -- needs one deterministic printing-id -> oracle_id
+ * lookup, not name matching. `average_decklist` is genuinely name-only (bare [name, qty] tuples)
+ * -- real fuzzy resolution against cards.name is needed there, and can fail; oracle_id stays null
+ * rather than dropping the entry.
+ *
+ * Mirrored at manaramp/src/lib/server/schema/commander_synergies.ts -- keep both in sync.
  */
-
-import { isStale } from "./card.js";
-
-/** Not a measured constant like card.js's STALENESS_DAYS -- a starting guess, revisit once usage
- *  shows how fast a commander's profile actually goes stale. */
-const COMMANDER_SYNERGY_STALENESS_DAYS = {
-  recommendations: 14,
-  average_decklist: 14,
-};
 
 const COMMANDER_SYNERGIES = {
   bsonType: "object",
@@ -73,14 +65,4 @@ const COMMANDER_SYNERGIES = {
   },
 };
 
-const COMMANDER_SYNERGY_INDEXES = [
-  { collection: "commander_synergies", keys: { commander_oracle_ids: 1 }, note: "Look up by either partner's oracle_id." },
-  { collection: "commander_synergies", keys: { "recommended_cards.oracle_id": 1 }, note: "Which commanders recommend this card." },
-];
-
-export {
-  COMMANDER_SYNERGIES,
-  COMMANDER_SYNERGY_STALENESS_DAYS,
-  COMMANDER_SYNERGY_INDEXES,
-  isStale,
-};
+export { COMMANDER_SYNERGIES };

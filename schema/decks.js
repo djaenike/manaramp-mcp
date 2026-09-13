@@ -1,25 +1,20 @@
 /**
- * schema/deck.js
+ * schema/decks.js
  *
  * One `decks` collection covering every format (Commander, Standard, Arena Draft, ...) -- same
- * "embed what's read together" call as card.js's `cards`. Design only -- not wired into index.js
+ * "embed what's read together" call as schema/cards.js. Design only -- not wired into index.js
  * yet.
  *
  * `format` (commander/standard/draft/...) and `platform` (paper/arena) are separate fields, not a
- * combinatorial enum -- "Arena Standard" is just { format: "standard", platform: "arena" }.
- * Format-specific fields (commander, bracket) are null when they don't apply, rather than a
- * separate collection per format. Deckbuilding rules (100-card singleton, etc.) are validated by
- * application code, not encoded here.
+ * combinatorial enum. Format-specific fields (commander, bracket) are null when they don't apply,
+ * rather than a separate collection per format. Deckbuilding rules (100-card singleton, etc.) are
+ * validated by application code, not encoded here.
  *
- * `cards` is oracle_id-keyed, same identity as card.js's `cards` collection, so a deck's cards
- * join directly with no name-matching. price_usd is time-varying like a card's market_data, just
- * with a shorter staleness window -- someone looking at their own deck cares more about "is this
- * right today."
+ * `cards` is oracle_id-keyed, same identity as cards.js's `cards` collection. price_usd is
+ * time-varying -- check isStale() (schema/staleness.js) before trusting.
+ *
+ * Mirrored at manaramp/src/lib/server/schema/decks.ts -- keep both in sync.
  */
-
-import { isStale } from "./card.js";
-
-const DECK_STALENESS_DAYS = { price: 3 };
 
 const DECKS = {
   bsonType: "object",
@@ -100,11 +95,4 @@ const DECKS = {
   },
 };
 
-const DECK_INDEXES = [
-  { collection: "decks", keys: { owner_user_id: 1, updated_at: -1 }, note: "My decks, most recent first." },
-  { collection: "decks", keys: { format: 1, platform: 1 } },
-  { collection: "decks", keys: { "cards.oracle_id": 1 }, note: "Multikey -- which decks run this card." },
-  { collection: "decks", keys: { origin_draft_session_id: 1 } },
-];
-
-export { DECKS, DECK_STALENESS_DAYS, DECK_INDEXES, isStale };
+export { DECKS };
