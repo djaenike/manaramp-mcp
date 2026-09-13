@@ -18,16 +18,17 @@
  * second one that then needs its own mapping back to the first.
  *
  * ============================================================================================
- * RESOLUTION CAVEAT: pieces arrive as card NAMES, not oracle_id
+ * NO NAME-RESOLUTION NEEDED: Spellbook's raw API already returns real oracle_id
  * ============================================================================================
- * sub-tools/spellbook/combos.js's live API returns each combo's pieces by name -- not any card
- * identity this project already keys on. Ingestion has to resolve every name against `cards.name`
- * (the same non-unique name index every other name-keyed source in this project already relies on)
- * to fill in `pieces`. A piece that fails to resolve (name drift, or a card not in the cache yet)
- * keeps its oracle_id `null` rather than being dropped -- the same "null means not resolved yet,
- * not a bad combo" rule used everywhere else in this schema set. `pieces_names` is kept alongside
- * `pieces` specifically so a combo stays displayable and useful even before every piece resolves,
- * and so a piece can be re-resolved later without re-fetching the combo from Spellbook.
+ * sub-tools/spellbook/combos.js's existing code only ever reads `u.card?.name` off each combo
+ * piece -- it never needed more than that for the current tool. But checked live against the real
+ * API (2026-09-13), each piece's `card` object already carries `oracleId` directly (confirmed:
+ * Demonic Consultation's piece included `oracleId: "9a1412db-45ad-46ea-8f12-a85d203113d8"`,
+ * Scryfall's own real oracle_id for that card, not a Spellbook-internal id). So `pieces` can be
+ * populated straight from Spellbook's response at ingestion time -- no fuzzy name-matching against
+ * `cards.name` required here, unlike commander_synergy_schema.js's average_decklist (see that
+ * file's header for why EDHREC's case is genuinely different). `pieces_names` is kept alongside
+ * purely for human-readable display/debugging, not as a resolution fallback.
  *
  * ============================================================================================
  * WHY NO isStale() HERE (unlike schema.js/deck_schema.js's time-varying fields)
@@ -42,7 +43,7 @@
 
 const COMBOS_SCHEMA = {
   bsonType: "object",
-  required: ["_id", "pieces_names"],
+  required: ["_id", "pieces_names", "pieces"],
   properties: {
     _id: {
       bsonType: "string",
@@ -55,8 +56,8 @@ const COMBOS_SCHEMA = {
     },
     pieces: {
       bsonType: "array",
-      items: { bsonType: ["string", "null"] },
-      description: "Resolved oracle_id per entry in pieces_names, same order and length, null where resolution hasn't succeeded yet (see file header). This is the field the multikey index below actually targets.",
+      items: { bsonType: "string" },
+      description: "oracle_id per entry in pieces_names, same order and length -- taken directly from Spellbook's own card.oracleId at ingestion (see file header), not resolved via name matching. This is the field the multikey index below actually targets.",
     },
     color_identity: {
       bsonType: "array",

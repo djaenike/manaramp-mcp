@@ -33,12 +33,24 @@
  * EDHREC's own convention (a pairing has its own page), not one per individual commander.
  *
  * ============================================================================================
- * RESOLUTION CAVEAT: same as combo_schema.js -- EDHREC returns card names, not oracle_id
+ * RESOLUTION: two genuinely different cases, checked live against the real API (2026-09-13)
  * ============================================================================================
- * Every name-bearing entry here gets a resolved oracle_id filled in at ingestion where possible
- * (against `cards.name`), null otherwise -- the raw name is always kept too, so the data stays
- * useful before resolution catches up, same "null means not resolved yet" rule used throughout
- * this schema set.
+ * `recommended_cards` (from the /commanders/:slug.json and /cards/:slug.json cardviews): EDHREC
+ * DOES give a real Scryfall id per card here -- but it's the PRINTING id (Scryfall's per-printing
+ * `id`), not `oracle_id`. Confirmed by cross-checking a live cardview's `id` for "Smaug, Wicked
+ * Worm" (19cc91f0-e724-41ac-b6d8-9a293bd63b42) against Scryfall's own record for that card: it
+ * matched Scryfall's `id` (the printing), not its `oracle_id` (20535126-f811-4386-bdce-d73f30691724)
+ * -- a different UUID. So ingestion needs one deterministic Scryfall printing-id -> oracle_id
+ * lookup per card (cheap and reliable, e.g. batched through the same /cards/collection endpoint
+ * cards.js already uses, just with `{ id }` identifiers instead of `{ name }`), NOT fuzzy name
+ * matching. `scryfall_printing_id` is kept alongside the resolved `oracle_id` so that lookup only
+ * ever needs to happen once per printing.
+ *
+ * `average_decklist` (from the /average-decks/:slug.json endpoint) is the genuinely name-only case:
+ * confirmed live, its `deck.cards` entries are bare `[name, quantity]` tuples with no id at all.
+ * Real fuzzy resolution against `cards.name` is required here, and can fail (name drift, a card not
+ * cached yet) -- `oracle_id` stays `null` in that case rather than dropping the entry, same "null
+ * means not resolved yet, not a bad entry" rule used throughout this schema set.
  */
 
 import { isStale } from "./schema.js";
@@ -75,9 +87,11 @@ const COMMANDER_SYNERGY_SCHEMA = {
       description: "getCommanderRecommendations'/getCardSynergies' output for this commander -- EDHREC's recommended pool with per-card synergy/inclusion numbers. Null means not yet fetched, not an empty pool.",
       items: {
         bsonType: "object",
+        required: ["name", "scryfall_printing_id"],
         properties: {
           name: { bsonType: "string" },
-          oracle_id: { bsonType: ["string", "null"] },
+          scryfall_printing_id: { bsonType: "string", description: "EDHREC's own `id` for this cardview -- verified to be Scryfall's per-printing id, not oracle_id (see file header). Always present." },
+          oracle_id: { bsonType: ["string", "null"], description: "Resolved from scryfall_printing_id via one Scryfall lookup at ingestion -- null only if that printing id itself can't be found (e.g. since removed from Scryfall), not a name-matching failure." },
           synergy_pct: { bsonType: ["double", "null"], description: "EDHREC's synergy score for this card specifically under this commander -- not portable to any other commander." },
           inclusion_pct: { bsonType: ["double", "null"], description: "How often this card shows up across decks built around this commander -- a popularity signal, distinct from synergy_pct." },
         },
