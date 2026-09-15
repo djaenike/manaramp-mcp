@@ -1,4 +1,5 @@
 node_modules/
+dist/
 arena_settings.json
 *.log
 .DS_Store

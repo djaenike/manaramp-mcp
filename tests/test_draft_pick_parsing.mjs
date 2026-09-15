@@ -7,7 +7,7 @@
 // response), and Premier/Traditional pick (both observed payload shapes), end-to-end through
 // DraftScanner so `pickedCards` is verified, not just the standalone parse functions.
 
-import { DraftScanner, parseQuickPick, parseHumanDraftPick } from "../sub-tools/arena-log/draft_log_parser.js";
+import { DraftScanner, parseQuickPick, parseHumanDraftPick } from "../src/sub-tools/arena-log/draft_log_parser.js";
 
 function quickPickLine(marker, cardIds, packNumber, pickNumber) {
   const request = JSON.stringify({

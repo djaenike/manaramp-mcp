@@ -4,8 +4,8 @@
 // resolveGrpIds -- with fake log lines shaped like real Quick Draft pack/pick broadcasts, so this
 // doesn't depend on a real running Arena client or Player.log.
 
-const { DraftScanner } = await import("../sub-tools/arena-log/draft_log_parser.js");
-const { resolveGrpIds } = await import("../sub-tools/arena-log/grpid_resolver.js");
+const { DraftScanner } = await import("../src/sub-tools/arena-log/draft_log_parser.js");
+const { resolveGrpIds } = await import("../src/sub-tools/arena-log/grpid_resolver.js");
 
 function quickPackLine(packNumber, pickNumber, cardIds) {
   const payload = JSON.stringify({ DraftStatus: "PickNext", PackNumber: packNumber, PickNumber: pickNumber, DraftPack: cardIds });

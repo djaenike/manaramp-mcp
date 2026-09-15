@@ -4,13 +4,16 @@ A local MCP server for Magic: The Gathering deck building, card research, and MT
 assistance. Runs locally over **stdio** — Claude Desktop spawns it as a subprocess, no hosting
 required.
 
-## Setup (plain JS — no build step)
+## Setup (TypeScript, built with tsup)
 
 ```bash
 npm install
+npm run build
 ```
 
-That's it — `index.js` runs directly with Node (v18+, for native `fetch`).
+`npm run build` compiles `src/` to `dist/` (Node v18+, for native `fetch`). `npm start` (or
+`node dist/local/index.js`) runs the built stdio server directly. `npm run dev` runs it straight
+from `src/` via `tsx`, no build step, for local iteration.
 
 ## Connect it to Claude Desktop
 
@@ -26,7 +29,7 @@ Add an entry under `mcpServers`:
   "mcpServers": {
     "manaramp": {
       "command": "node",
-      "args": ["/absolute/path/to/manaramp-mcp/index.js"]
+      "args": ["/absolute/path/to/manaramp-mcp/dist/local/index.js"]
     }
   }
 }

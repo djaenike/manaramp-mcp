@@ -6,7 +6,7 @@
 // cross-process proof pattern as test_grpid_disk_cache.mjs.
 
 import { rmSync } from "fs";
-import { loadSettings, saveSettings } from "../sub-tools/arena-log/settings.js";
+import { loadSettings, saveSettings } from "../src/sub-tools/arena-log/settings.js";
 
 const TMP_PATH = `${process.cwd()}/tests/.tmp_arena_settings.json`;
 rmSync(TMP_PATH, { force: true });

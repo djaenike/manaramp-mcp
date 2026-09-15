@@ -40,11 +40,10 @@ global.fetch = async (url) => {
   throw new Error("Unmocked fetch: " + u);
 };
 
-process.argv[1] = "/nonexistent";
-// Keep this test from writing into the real Downloads folder -- index.js reads this env var at
-// module-load time (see REPORTS_DIR in index.js).
+// Keep this test from writing into the real Downloads folder -- run-checks-and-deliver.ts reads
+// this env var at module-load time (see REPORTS_DIR there).
 process.env.SCRYFALL_MCP_REPORTS_DIR = `${process.cwd()}/tests/.tmp_reports_success`;
-const { runChecksAndDeliver } = await import("../index.js");
+const { runChecksAndDeliver } = await import("../src/tools/shared/run-checks-and-deliver.js");
 const { unlinkSync, rmdirSync } = await import("fs");
 
 const deckLines = ["Commander", "1 Atraxa, Grand Unifier", "", "Deck"];

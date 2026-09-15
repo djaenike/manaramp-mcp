@@ -10,9 +10,8 @@ import { rmSync } from "fs";
 const TMP_SETTINGS_PATH = `${process.cwd()}/tests/.tmp_user_id_settings.json`;
 rmSync(TMP_SETTINGS_PATH, { force: true });
 process.env.SCRYFALL_MCP_SETTINGS_PATH = TMP_SETTINGS_PATH;
-process.argv[1] = "/nonexistent"; // skip server.connect()
 
-const { getOrCreateUserId } = await import("../index.js");
+const { getOrCreateUserId } = await import("../src/tools/shared/arena-local-state.js");
 
 const first = getOrCreateUserId();
 const second = getOrCreateUserId(); // same process, same call again -- must also be stable

@@ -31,14 +31,11 @@ global.fetch = async (url) => {
   throw new Error("Unmocked fetch: " + u);
 };
 
-// Mock the MCP SDK modules so importing index.js (which imports them) doesn't fail in this
-// sandbox -- we only need runChecksAndDeliver, not an actual running server.
-process.argv[1] = "/nonexistent"; // ensures the import.meta.url guard skips server.connect()
-// Keep this test from writing into the real Downloads folder -- index.js reads this env var at
-// module-load time (see REPORTS_DIR in index.js).
+// Keep this test from writing into the real Downloads folder -- run-checks-and-deliver.ts reads
+// this env var at module-load time (see REPORTS_DIR there).
 process.env.SCRYFALL_MCP_REPORTS_DIR = `${process.cwd()}/tests/.tmp_reports_blocked`;
 
-const { runChecksAndDeliver } = await import("../index.js");
+const { runChecksAndDeliver } = await import("../src/tools/shared/run-checks-and-deliver.js");
 const { unlinkSync, rmdirSync } = await import("fs");
 
 const brokenDecklistText = "Commander\n1 Atraxa, Grand Unifier\n\nDeck\n1 Sol Ring";

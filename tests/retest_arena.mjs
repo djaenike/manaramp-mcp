@@ -1,7 +1,12 @@
-import { LogReader } from "./sub-tools/arena-log/log_reader.js";
-import { extractGreEvents, buildMatchTimeline } from "./sub-tools/arena-log/gre_match_parser.js";
-import { enrichTimeline } from "./sub-tools/arena-log/grpid_resolver.js";
-import { DraftScanner } from "./sub-tools/arena-log/draft_log_parser.js";
+// NOTE: this ad-hoc manual script reads a real uploaded Player.log path from a Claude.ai file-
+// upload sandbox (/mnt/user-data/uploads/...) that doesn't exist on a normal checkout -- it was
+// already broken before this TypeScript conversion (wrong relative import path, on top of the
+// missing file) and isn't part of the tests/test_*.mjs regression suite. Left as a manual/dev
+// script; only the import paths were fixed here for consistency with the rest of tests/.
+import { LogReader } from "../src/sub-tools/arena-log/log_reader.js";
+import { extractGreEvents, buildMatchTimeline } from "../src/sub-tools/arena-log/gre_match_parser.js";
+import { enrichTimeline } from "../src/sub-tools/arena-log/grpid_resolver.js";
+import { DraftScanner } from "../src/sub-tools/arena-log/draft_log_parser.js";
 
 const CARD_DB = {
   105182: { name: 'Forest' }, 105178: { name: 'Swamp' }, 95199: { name: 'Forest' },

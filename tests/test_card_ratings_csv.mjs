@@ -2,7 +2,7 @@
 // exactly like a real 17lands.com/card_ratings CSV export (quoted fields, commas/apostrophes in
 // names, blank cells for small sample sizes, negative "pp" values, colorless/gold cards).
 import { writeFileSync, unlinkSync } from "fs";
-import { parseCardRatingsCsv, loadCardRatings } from "../sub-tools/arena-log/card_ratings.js";
+import { parseCardRatingsCsv, loadCardRatings } from "../src/sub-tools/arena-log/card_ratings.js";
 
 const SAMPLE_CSV = [
   '"Name","Color","Rarity","# Seen","ALSA","# Picked","ATA","# GP","% GP","GP WR","# OH","OH WR","# GD","GD WR","# GIH","GIH WR","# GNS","GNS WR","IIH"',

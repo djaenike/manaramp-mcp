@@ -2,12 +2,25 @@
   "name": "manaramp-mcp",
   "version": "1.0.0",
   "type": "module",
-  "main": "index.js",
+  "main": "./dist/local/index.js",
+  "exports": {
+    ".": "./dist/tools/index.js",
+    "./local": "./dist/local/index.js"
+  },
   "scripts": {
-    "start": "node index.js"
+    "build": "tsup && node scripts/copy-assets.mjs",
+    "dev": "tsx src/local/index.ts",
+    "start": "node dist/local/index.js",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.4",
-    "zod": "^3.23.8"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
   }
 }

@@ -8,11 +8,11 @@
   },
   "server": {
     "type": "node",
-    "entry_point": "index.js",
+    "entry_point": "dist/local/index.js",
     "mcp_config": {
       "command": "node",
       "args": [
-        "${__dirname}/index.js"
+        "${__dirname}/dist/local/index.js"
       ],
       "env": {}
     }

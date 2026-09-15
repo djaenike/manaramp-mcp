@@ -8,7 +8,7 @@
 // passing, so this is a real proof, not just an assertion on a return value.
 
 import { writeFileSync, readFileSync, mkdirSync, rmSync } from "fs";
-import { resolveGrpIds } from "../sub-tools/arena-log/grpid_resolver.js";
+import { resolveGrpIds } from "../src/sub-tools/arena-log/grpid_resolver.js";
 
 const TMP_DIR = `${process.cwd()}/tests/.tmp_grpid_cache`;
 const TMP_CACHE_PATH = `${TMP_DIR}/grpid_cache.json`;

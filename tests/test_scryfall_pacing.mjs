@@ -10,7 +10,7 @@
 
 global.fetch = async () => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => ({}) });
 
-const { scryfallFetch } = await import("../sub-tools/scryfall/client.js");
+const { scryfallFetch } = await import("../src/sub-tools/scryfall/client.js");
 
 const start = Date.now();
 const completionOffsets = [];

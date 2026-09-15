@@ -4,9 +4,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A local MCP (Model Context Protocol) server. `index.js` is now a thin sequencing layer (ESM, no build
-step) — it just wires together focused modules under `sub-tools/`, grouped by concern rather than by
-tool name. It runs over stdio and is spawned as a subprocess by Claude Desktop / Claude Code.
+A local MCP (Model Context Protocol) server, written in TypeScript (built with `tsup`, run over stdio,
+spawned as a subprocess by Claude Desktop / Claude Code). As of the 2026-09 TypeScript conversion, the
+code is split into three layers under `src/`:
+
+- `src/sub-tools/` — focused modules grouped by concern (unchanged in spirit from before, just `.ts`
+  now), each exporting plain, reusable functions with no MCP-specific wrapping. See the per-directory
+  breakdown below.
+- `src/tools/` — one file per registered tool (or, for the two deck-building tools, one shared file),
+  each exporting a plain object — `{ name, description, inputSchema, handler }` — rather than calling
+  `server.tool(...)` itself. `src/tools/index.ts` barrels all 8 into a `tools` array. This is the
+  package's `"."` export (see `package.json`'s `exports` map): `import { tools } from 'manaramp-mcp'`
+  gets just these definitions, with zero local-machine/stdio code pulled in.
+- `src/local/index.ts` — the stdio bootstrap (was `index.js`). Imports `tools` from `../tools/index.js`
+  and registers each with `server.tool(...)`, plus owns everything genuinely local-machine-only:
+  writing the rendered HTML report to the user's Downloads folder, connecting `StdioServerTransport`.
+  This is the package's `"./local"` export and what `npm start`/the `.mcpb` manifest actually run.
+
+**Why the split**: the eventual goal (a separate, later phase — not built yet, and not started by this
+conversion) is a remote MCP endpoint in the sibling `manaramp` Cloudflare Workers repo that imports the
+SAME tool definitions this local stdio server uses, via `import { tools } from 'manaramp-mcp'`. This
+conversion pass only does the TypeScript conversion + `tools/`/`sub-tools/`/`local/` restructuring
+needed to make that possible later — it does **not** build the remote transport, add an API-key/auth
+schema, or touch the `manaramp` repo. Two of the 8 tools (`arena_draft_assistance` /
+`arena_draft_game_advice`) are fundamentally local-machine-only forever (they read a real
+`Player.log` file) and will never be part of what a future remote transport imports, even though
+they're still present in the `tools` array for completeness — see
+`src/tools/shared/arena-local-state.ts`'s header comment.
 
 It exposes 8 tools:
 - `new_deck_creation` / `existing_deck_cleanup` — build or validate a Commander (or other-format) deck,
@@ -21,14 +45,19 @@ It exposes 8 tools:
   a tricky ability. This is what makes "pick the best cards, checking combos/pairing/pricing/Forge
   text" an actual capability rather than something the two deck tools' descriptions merely claimed —
   earlier revisions referenced these tools by name in `new_deck_creation`'s description without
-  actually registering them, which meant Claude had no way to call them.
+  actually registering them, which meant Claude had no way to call them. These 4 are DELIBERATELY BOTH
+  standalone-registered tools (`src/tools/search-cards.ts`, `get-card-synergies.ts`, `find-combos.ts`,
+  `get-card-script.ts` — each a thin wrapper with no logic of its own) AND reused internally by
+  `src/tools/deck-building.ts` — but `deck-building.ts` imports the underlying functions
+  (`searchCards`, `getCardSynergies`, etc.) directly from their `sub-tools/` modules, NOT from these
+  wrapper files, so tools never import other tools.
 - `arena_draft_assistance` / `arena_draft_game_advice` — read MTG Arena's `Player.log` and resolve pack
   contents / match events to real card data for draft-pick and in-game advice.
 
 Playtest-table integration and its 5 `sub-tools/playtest/*`-backed operations (list/create/get-state/
 load-deck/do-action) are **not** wired into any of the 8 tools right now — deliberately. See "Playtest
 table (currently disabled)" below. `sub-tools/playtest/` doesn't need to change for that; the code is
-intact and independently testable, it's just not called from `index.js`.
+intact and independently testable, it's just not called from any registered tool.
 
 This repo used to also hold the playtest-table frontend/Worker itself, at `extensions/playtest-table`
 (SvelteKit + Cloudflare Durable Objects). As of 2026-09-12 it lives in a sibling repo, `manaramp`,
@@ -40,29 +69,42 @@ stays in *this* repo regardless of where the Worker lives — it's the MCP-side 
 ## Commands
 
 ```bash
-npm install     # only setup step — plain JS, no build
-node index.js   # or `npm start` — runs the server directly over stdio
+npm install       # setup
+npm run build     # tsup: compiles src/ -> dist/ (mirrors src/'s folder structure 1:1, no bundling —
+                   # see tsup.config.ts's header comment for why), then copies the two non-.ts
+                   # delivery/ template assets into dist/
+npm start         # node dist/local/index.js — runs the BUILT server over stdio
+npm run dev       # tsx src/local/index.ts — runs the server straight from source, no build step
+npm run typecheck # tsc --noEmit
 ```
 
 There's a small `tests/` directory (plain `.mjs` scripts, no test runner/framework — run each directly
-with `node tests/<file>.mjs`) that mocks `global.fetch` and imports real functions from `index.js` and
-`sub-tools/` to check them in isolation, since a stdio server itself isn't meaningfully testable by just
-running the file standalone (it blocks waiting on stdio and any output goes to a client, not the
-terminal). Still true: the only way to validate a *tool's actual UX* (not just its logic) is to run the
-server and exercise a tool through an MCP client (Claude Desktop/Code).
+with `npx tsx tests/<file>.mjs`, which transparently resolves their imports of `.ts` files under
+`src/`) that mocks `global.fetch` and imports real functions from `src/tools/`/`src/sub-tools/` to check
+them in isolation, since a stdio server itself isn't meaningfully testable by just running the file
+standalone (it blocks waiting on stdio and any output goes to a client, not the terminal). Still true:
+the only way to validate a *tool's actual UX* (not just its logic) is to run the server and exercise a
+tool through an MCP client (Claude Desktop/Code). (`tests/retest_arena.mjs` is a manual/ad-hoc script
+that reads a real uploaded `Player.log` path from a Claude.ai sandbox that won't exist on a normal
+checkout — not part of the `test_*.mjs` regression suite, was already broken before this conversion.)
 
 To connect a local checkout to Claude Desktop for manual testing, add to
 `claude_desktop_config.json` (path in [readme.md](readme.md)):
 ```json
-{ "mcpServers": { "manaramp": { "command": "node", "args": ["/absolute/path/to/index.js"] } } }
+{ "mcpServers": { "manaramp": { "command": "node", "args": ["/absolute/path/to/dist/local/index.js"] } } }
 ```
-Restart Claude Desktop after any change to `index.js` or any `sub-tools/` file — it does not hot-reload.
+Run `npm run build` after any change to `src/` — Claude Desktop spawns the **built** `dist/local/index.js`,
+which does not hot-reload or auto-rebuild.
 
 ## Architecture
 
-Every tool follows the same shape: `server.tool(name, description, zodSchema, async handler)`, where the
-handler sequences one or more `sub-tools/` functions and returns `{ content: [{ type: "text", text: ... }] }`
-(MCP's required response envelope — always stringify JSON payloads into that one text field).
+Every tool is a plain object under `src/tools/` — `{ name, description, inputSchema, handler }` (the
+same `name`/`description`/zod-raw-shape/`async handler` that used to be positional arguments to
+`server.tool(...)` directly) — where the handler sequences one or more `sub-tools/` functions and
+returns `{ content: [{ type: "text", text: ... }] }` (MCP's required response envelope — always
+stringify JSON payloads into that one text field). `src/local/index.ts` is the only place that actually
+calls `server.tool(...)`, looping uniformly over `src/tools/index.ts`'s `tools` array:
+`for (const tool of tools) server.tool(tool.name, tool.description, tool.inputSchema, tool.handler)`.
 
 The tool descriptions passed to `server.tool(...)` are load-bearing, not cosmetic — they're what the
 calling Claude model reads to decide when and how to use each tool, how to interpret caveats about a
@@ -71,60 +113,60 @@ editing a tool, keep the description accurate to its actual behavior and data-qu
 that's the only place this information reaches the model.
 
 `sub-tools/` is organized by concern, not by tool:
-- `scryfall/` — `client.js` (shared `HEADERS` + `scryfallFetch` — Scryfall rejects requests without an
-  accurate User-Agent), `cards.js` (search/get/rulings — `searchCards`/`getCardByName` both include a
-  `category` field, via `classify.js`, alongside the raw `type_line`), `classify.js` (pure, fetch-free
+- `scryfall/` — `client.ts` (shared `HEADERS` + `scryfallFetch` — Scryfall rejects requests without an
+  accurate User-Agent), `cards.ts` (search/get/rulings — `searchCards`/`getCardByName` both include a
+  `category` field, via `classify.ts`, alongside the raw `type_line`), `classify.ts` (pure, fetch-free
   `classifyCategory`/`isManaRock`/`isCardDraw`/`isRemoval` — lives at this base layer, not in
   `delivery/`, specifically so both the lookup tools and the final report share one classification
   instead of two drifting copies). Official, documented API, no key needed. `scryfallFetch`'s
   per-category rate-limit pacing (real limits: 2/sec for search/named/random/collection, 10/sec for
   everything else) is a per-category **promise-chained queue**, not a plain "read last-request-time,
   sleep, write" check — a real live-draft session showed the latter isn't safe under concurrency:
-  `grpid_resolver.js` fires up to 5 concurrent lookups, and concurrent callers reading the same
+  `grpid_resolver.ts` fires up to 5 concurrent lookups, and concurrent callers reading the same
   stale timestamp before any of them wrote it back let them all fire in a near-simultaneous burst,
   defeating the pacing and tripping Scryfall's real rate limit. See `tests/test_scryfall_pacing.mjs`
   (asserts 5 concurrent "search"-category calls complete ~520ms apart, not in a burst).
-- `edhrec/` — `client.js` (`slugify()`, EDHREC's URL slug format — no fuzzy matching, an inexact slug
-  404s), `recommendations.js` (`getCommanderRecommendations`, used internally by both deck tools for
+- `edhrec/` — `client.ts` (`slugify()`, EDHREC's URL slug format — no fuzzy matching, an inexact slug
+  404s), `recommendations.ts` (`getCommanderRecommendations`, used internally by both deck tools for
   commander-fit context; `getCardSynergies`, exposed as the standalone `get_card_synergies` tool;
   `getAverageDecklist`, still not exposed anywhere). Unofficial, undocumented JSON endpoints
   reverse-engineered from edhrec.com's own frontend.
-- `forge/card_script.js` — reads community rules-engine scripts live from Card-Forge/forge's GitHub raw
+- `forge/card_script.ts` — reads community rules-engine scripts live from Card-Forge/forge's GitHub raw
   file host (GPL-3.0), keyed by a guessed filename via `forgeFilename()`. Not verified against split
   cards, DFCs, or unusual punctuation; 404s should fall back to Scryfall oracle text. Exposed as the
   standalone `get_card_script` tool.
-- `cardkingdom/pricing.js` — no developer API; fetches one large public pricelist JSON file and filters
+- `cardkingdom/pricing.ts` — no developer API; fetches one large public pricelist JSON file and filters
   in memory. Numeric fields arrive from CK as strings and must be parsed. This server's standardized
   "real dollar price" source, distinct from Scryfall's bundled bulk-estimate price. `computeDeckPriceTotal`
   and `fetchPriceByNameMap` are the two entry points other modules reuse (deck delivery and the
   price-constrained builder, respectively) instead of re-fetching the pricelist per card.
-- `spellbook/combos.js` — Commander Spellbook's official REST API (MIT licensed), but the exact query
+- `spellbook/combos.ts` — Commander Spellbook's official REST API (MIT licensed), but the exact query
   parameter (`q`) is inferred from a syntax guide rather than confirmed against live docs (their docs
   site blocks automated fetching). `findCombos` (the standalone `find_combos` tool, queried with an
   explicit AND across whatever card names are passed in) is the one exception to the next point — it's
   meant for a Claude-driven "do these specific cards combo" check, not a full-decklist scan.
-  `classifyComboSpeed`/`findCombosInDeck` (used internally by `bracket/rating.js`, not exposed
+  `classifyComboSpeed`/`findCombosInDeck` (used internally by `bracket/rating.ts`, not exposed
   standalone) query **one card at a time** across the whole decklist — empirically confirmed that
   Spellbook's `or` keyword is accepted syntax but does NOT behave as boolean OR (two individually-valid
   single-card queries can combine via `or` into zero results), so don't reintroduce a batched-OR
   "optimization" there without re-verifying it against the live API first.
-- `bracket/rating.js` (+ `reference_data.js`) — the Commander Bracket System classifier. Not a live data
+- `bracket/rating.ts` (+ `reference_data.ts`) — the Commander Bracket System classifier. Not a live data
   source: `GAME_CHANGERS`, `MASS_LAND_DENIAL_CARDS`, `EXTRA_TURN_CARDS` are hardcoded reference lists
   (Game Changers current as of the Feb 9, 2026 update, reviewed by the Commander Format Panel roughly
   every 3-4 months — re-verify against WotC's own list if a rating looks off). Combo detection reuses
-  `spellbook/combos.js`.
-- `deck-building/consistency.js` — not a separate upstream source: reuses the same Scryfall
+  `spellbook/combos.ts`.
+- `deck-building/consistency.ts` — not a separate upstream source: reuses the same Scryfall
   `/cards/collection` batch call (one fetch yields `cmc`, `type_line`, `color_identity`,
   `legalities.commander`, `mana_cost`, `oracle_text`, and an `image_url` for the whole decklist at once,
-  the last three specifically so `delivery/report_data.js` doesn't need a second fetch). Checks deck
+  the last three specifically so `delivery/report_data.ts` doesn't need a second fetch). Checks deck
   size (100, commander(s) included), singleton (basic-land-ness read from the real `type_line`, not a
   hardcoded name list), color identity, and Commander legality — then computes a mana curve and a
   `curve_out_probability` (turns 1-6) via a hand-rolled hypergeometric helper (`combinations`/
   `hypergeometricAtLeast`, an iterative running product/division so a 99-card library never risks
   overflow). That probability is an explicitly SIMPLIFIED model (7-card opening hand + 1 draw/turn, no
   mulligans/scry/ramp/card-draw spells). Deliberately does **not** detect combos — that stays
-  `bracket/rating.js`'s job, so the Commander-Spellbook-querying logic never has to live in two places.
-- `deck-building/price_constrained_builder.js` (`buildDeckByPrice`) — pulls a commander's full EDHREC
+  `bracket/rating.ts`'s job, so the Commander-Spellbook-querying logic never has to live in two places.
+- `deck-building/price_constrained_builder.ts` (`buildDeckByPrice`) — pulls a commander's full EDHREC
   card pool, cross-references every candidate against Card Kingdom's pricelist, and greedily fills 99
   nonland slots by synergy-per-dollar under an *optional* price ceiling (no ceiling at all is a valid,
   common case — not exclusively a "budget" tool, hence the name; it replaced an earlier
@@ -132,33 +174,35 @@ that's the only place this information reaches the model.
   dollar optimizer, not a power-level/bracket classifier or combo-aware deckbuilder — it doesn't check
   curve, color balance, or land count on its own (that's why its output always goes through
   `analyze_deck_consistency`/`rate_deck_bracket` afterward).
-- `deck-building/moxfield.js` — no official public API; hits the same undocumented
+- `deck-building/moxfield.ts` — no official public API; hits the same undocumented
   `api2.moxfield.com/v2/decks/all/<deckId>` endpoint Moxfield's own frontend calls, which needs its own
   browser-like `MOXFIELD_HEADERS` (the shared Scryfall `HEADERS` User-Agent gets rejected here). **Known
   issue**: Moxfield's anti-bot protection sometimes 403s Node's `fetch()` outright even with a full
   realistic Chrome header set — points at TLS/transport-level fingerprinting, not anything header-content
   can fix. Shipped anyway with a clear 403 fallback message (paste decklist text directly instead)
   rather than chasing a fingerprint-spoofing arms race against Cloudflare's bot detection.
-- `playtest/` (`client.js`, `state.js`, `lobby.js`, `actions.js`) — the playtest-table WebSocket
-  protocol. `parsePlaytestDecklist` (in `state.js`) is the one function from here actually used by the
+- `playtest/` (`client.ts`, `state.ts`, `lobby.ts`, `actions.ts`) — the playtest-table WebSocket
+  protocol. `parsePlaytestDecklist` (in `state.ts`) is the one function from here actually used by the
   live tools today (both deck tools use it to parse `Commander`/`Deck` sections). See "Playtest table
   (currently disabled)" below for the rest.
 - `delivery/` — the deck report pipeline; see "Deck delivery pipeline" below. Also holds
-  `create_playtest_room.js` (currently unused, see below).
-- `arena-log/` (`log_reader.js`, `draft_log_parser.js`, `gre_match_parser.js`, `grpid_resolver.js`) —
-  backs the two `arena_*` tools. `log_reader.js` tracks a byte offset per `player_log_path` so repeated
+  `create_playtest_room.ts` (currently unused, see below).
+- `arena-log/` (`log_reader.ts`, `draft_log_parser.ts`, `gre_match_parser.ts`, `grpid_resolver.ts`) —
+  backs the two `arena_*` tools. `log_reader.ts` tracks a byte offset per `player_log_path` so repeated
   calls only process new lines (Arena rewrites `Player.log` from scratch every launch — a size decrease
-  is detected as a relaunch and resets state). `grpid_resolver.js` batches `arena_id:<id>` lookups
-  through `scryfall/cards.js`'s `search_cards`-equivalent, confirmed live against Scryfall's search
+  is detected as a relaunch and resets state). `grpid_resolver.ts` batches `arena_id:<id>` lookups
+  through `scryfall/cards.ts`'s `search_cards`-equivalent, confirmed live against Scryfall's search
   syntax. `resolveGrpIds` takes an optional `{ cache }` (a plain `Map`) to read/write through and
   returns `{ cards, errors }` (not a bare `Map` — `errors` is grpId → the actual failure message,
-  for whatever was looked up *this call*). `index.js` keeps one `grpIdCardCache`, shared by BOTH
-  Arena tools (a grpId always maps to the same real card, so this is safe across different
-  drafts/games/log paths, not just within one) — a confirmed miss is cached too, since a genuine
-  404 (e.g. a special-art land print Scryfall's `arena_id` field has no entry for) won't resolve
-  differently on a retry. This cache is **disk-persisted**, not just in-memory: `loadGrpIdCache`/
-  `saveGrpIdCache` read/write `card_cache/grpid_cache.json` (next to `index.js`, via
-  `import.meta.url` like `CARD_RATINGS_DIR` — same "flat file until you set up SQL" stopgap as
+  for whatever was looked up *this call*). `src/tools/shared/arena-local-state.ts` keeps one
+  `grpIdCardCache`, shared by BOTH Arena tools (a grpId always maps to the same real card, so this is
+  safe across different drafts/games/log paths, not just within one) — a confirmed miss is cached too,
+  since a genuine 404 (e.g. a special-art land print Scryfall's `arena_id` field has no entry for)
+  won't resolve differently on a retry. This cache is **disk-persisted**, not just in-memory:
+  `loadGrpIdCache`/`saveGrpIdCache` read/write `card_cache/grpid_cache.json` at the PACKAGE ROOT (via a
+  fixed upward walk from `arena-local-state.ts`'s own compiled location, documented in that file's
+  header comment — same effective location `CARD_RATINGS_DIR` resolves to) — same "flat file until you
+  set up SQL" stopgap as
   `card_ratings/`, deliberately, and likewise tracked in git rather than ignored, since unlike
   `card_ratings.csv`'s evolving win-rate snapshot, a grpId→card mapping is a permanent fact that
   only ever gets more valuable to keep). `withPersistentGrpIdCache(...)` wraps both Arena tools'
@@ -174,8 +218,8 @@ that's the only place this information reaches the model.
   persistence, not just a module-level `Map`. See `tests/test_arena_picks_resolved.mjs` (cache
   reuse within a process) and `tests/test_grpid_disk_cache.mjs` (survives a fresh process, proven
   by making the mocked lookup function throw if it's ever called again for a cached id).
-  Only Premier/Quick Draft are implemented in `draft_log_parser.js` (not Traditional/Sealed).
-  `gre_match_parser.js` only reports ANNOTATED, CONFIRMED events — an `ActionsAvailableReq` listing a
+  Only Premier/Quick Draft are implemented in `draft_log_parser.ts` (not Traditional/Sealed).
+  `gre_match_parser.ts` only reports ANNOTATED, CONFIRMED events — an `ActionsAvailableReq` listing a
   legal option is never reported as something that happened, only an actual
   `ZoneTransfer`/`ObjectsSelected`/damage annotation is. Arena's own log records the human's actual
   pick confirmation the moment it happens in-client (`DraftScanner`'s `pickedCards`, populated by
@@ -195,17 +239,17 @@ that's the only place this information reaches the model.
   `BotDraft_DraftPick` — 17Lands' own client explicitly checks both forms since real logs have used
   either. See `tests/test_draft_pick_parsing.mjs` for fixtures built directly from those two
   reference parsers' own shapes. PACK parsing was not touched — no evidence surfaced that it's wrong.
-  `arena_draft_assistance`'s handler in `index.js` resolves `pickedCards` through the
+  `arena_draft_assistance`'s handler in `src/tools/arena-draft-assistance.ts` resolves `pickedCards` through the
   same `resolveGrpIds` call as `currentPack` (one combined batch, since `resolveGrpIds` dedupes) and
   returns it as `picks_made` — an earlier revision only returned `pickedCards.length`, which made the
   actual pool invisible to Claude and made pool-aware picks (leaning into an emerging archetype,
   avoiding an over-drafted color) impossible; see `tests/test_arena_picks_resolved.mjs`. There is
   still no external pick-quality data source wired in anywhere (no 17Lands win rates, no tier list) —
-  `draft_log_parser.js`'s header comment notes it borrowed 17Lands' *log format* knowledge from the
+  `draft_log_parser.ts`'s header comment notes it borrowed 17Lands' *log format* knowledge from the
   open-source `MTGA_Draft_17Lands` project, deliberately not its rating data — so pick advice is
   Claude's own judgment over real oracle text/mana cost, not backed by aggregated draft-performance
-  stats, UNLESS `card_ratings_csv_path` is supplied (see `card_ratings.js` below).
-- `arena-log/card_ratings.js` — optional real win-rate/signal data for `arena_draft_assistance`,
+  stats, UNLESS `card_ratings_csv_path` is supplied (see `card_ratings.ts` below).
+- `arena-log/card_ratings.ts` — optional real win-rate/signal data for `arena_draft_assistance`,
   loaded from a card_ratings CSV the **user** manually exports from 17lands.com/card_ratings (a
   normal button on that page) — this server never calls 17lands.com itself. That distinction is
   deliberate: 17Lands' own usage guidelines discourage third parties from hitting their live
@@ -219,40 +263,50 @@ that's the only place this information reaches the model.
   not built here. `parseCardRatingsCsv`/`loadCardRatings` hand-parse the export (quoted CSV, no
   dependency added) into a `Map<lowercased name, row>`; percentage/`pp` columns parse to numbers,
   blank cells (small sample size) parse to `null` — **null means no reliable data, not a bad card**,
-  don't treat it as 0. `index.js` caches one loaded `Map` per `card_ratings_csv_path` (like
-  `draftSessions`) and merges each pack/pick card's row onto it as `card_ratings_17lands` by exact
+  don't treat it as 0. `src/tools/arena-draft-assistance.ts` caches one loaded `Map` per
+  `card_ratings_csv_path` (a module-level `cardRatingsCache`, imported from `arena-local-state.ts`)
+  and merges each pack/pick card's row onto it as `card_ratings_17lands` by exact
   name match (lowercased) — no fuzzy matching, so a 17Lands name that doesn't exactly match
   Scryfall's (rare, but possible for reprints/promos) silently returns `null` there. See
   `tests/test_card_ratings_csv.mjs`.
 
-`index.js` keeps its own per-`player_log_path` session maps (`draftSessions`/`matchSessions`) so the two
-Arena tools' offset/state persists *across* separate tool calls within one running server process (each
-pick / each poll is its own MCP call).
+`src/tools/arena-draft-assistance.ts` and `src/tools/arena-draft-game-advice.ts` each keep their own
+per-`player_log_path` session map (`draftSessions`/`matchSessions` respectively, one module-level `Map`
+per file) so the two Arena tools' offset/state persists *across* separate tool calls within one running
+server process (each pick / each poll is its own MCP call).
 
-Both Arena tools' `player_log_path` param is **optional**, backed by `sub-tools/arena-log/settings.js`
+Both Arena tools' `player_log_path` param is **optional**, backed by `sub-tools/arena-log/settings.ts`
 (`loadSettings`/`saveSettings`, a generic path-keyed JSON store — deliberately generic, not
 Arena-specific, so it's reusable for any future "remember this on disk" need) writing to
-`arena_settings.json` next to `index.js` (gitignored — it's a real absolute path on the user's specific
+`arena_settings.json` at the package root (gitignored — it's a real absolute path on the user's specific
 machine, unlike `card_ratings/`/`card_cache/`, which are portable and tracked). `resolvePlayerLogPath`
-in `index.js` is the glue: an explicitly-given path always wins and gets saved; an omitted one falls
-back to whatever was last remembered. This fixes a real, reported annoyance — Claude has no memory of
-a *prior conversation's* tool-call arguments, so without server-side persistence the user had to retype
-the same path every single new conversation, even the day right after already giving it once. See
-`tests/test_settings_persistence.mjs` (proves a value survives a fresh load, simulating a new
-conversation with nothing shared in memory).
+(now in `src/tools/shared/arena-local-state.ts`, imported by both Arena tool files AND re-exported from
+`src/local/index.ts` for tests) is the glue: an explicitly-given path always wins and gets saved; an
+omitted one falls back to whatever was last remembered. This fixes a real, reported annoyance — Claude
+has no memory of a *prior conversation's* tool-call arguments, so without server-side persistence the
+user had to retype the same path every single new conversation, even the day right after already giving
+it once. See `tests/test_settings_persistence.mjs` (proves a value survives a fresh load, simulating a
+new conversation with nothing shared in memory). `arena-local-state.ts` is deliberately kept under
+`tools/` (not `local/`) despite being a real filesystem/local-machine concern — see that file's own
+header comment for why: it's shared state the two ALREADY-permanently-local-only Arena tools both need
+(a grpId resolved during a draft must still be cache-hit during that match's game-advice calls), and
+keeping it there avoids awkwardly injecting it through `local/index.ts`'s otherwise-uniform, flat
+tool-registration loop.
 
 ## Deck delivery pipeline
 
-Both deck tools funnel through a shared `runChecksAndDeliver` (defined in `index.js`, not tucked into
-`sub-tools/`, specifically so the full check → build report → render sequence stays visible in one
-place) after they've resolved a `decklist_text` (auto-built, pasted, or fetched from Moxfield):
+Both deck tools funnel through a shared `runChecksAndDeliver` (defined in
+`src/tools/shared/run-checks-and-deliver.ts`, not tucked into `sub-tools/`, specifically so the full
+check → build report → render sequence stays visible in one place — imported by both
+`newDeckCreationTool` and `existingDeckCleanupTool` in `src/tools/deck-building.ts`) after they've
+resolved a `decklist_text` (auto-built, pasted, or fetched from Moxfield):
 
-1. Parse `Commander`/`Deck` sections via `playtest/state.js`'s `parsePlaytestDecklist`. If that fails
+1. Parse `Commander`/`Deck` sections via `playtest/state.ts`'s `parsePlaytestDecklist`. If that fails
    entirely (no commander or no deck found at all), return immediately — there's nothing coherent to
    report on.
 2. Run `computeDeckConsistency`, `computeBracketRating`, and `computeDeckPriceTotal` in parallel
    (`Promise.all` — this is the one place in the file that pattern is used instead of a single `fetch`).
-3. `delivery/report_data.js`'s `buildActualOutput(...)` assembles the full `actualOutput` contract
+3. `delivery/report_data.ts`'s `buildActualOutput(...)` assembles the full `actualOutput` contract
    defined in `delivery/deck_report_template.json` (the canonical shape reference — read it before
    changing this pipeline's output fields) from those three results: full per-card list (name/qty/
    category/price/image/mana cost/oracle text — category via `classifyCategory(typeLine)`; mana-rock/
@@ -263,22 +317,26 @@ place) after they've resolved a `decklist_text` (auto-built, pasted, or fetched 
    (compares bracket *numbers* extracted from both strings, since e.g. "Bracket 3" vs "Upgraded (3)"
    don't share text otherwise). Card images stay plain Scryfall `https://` URLs here — **do not**
    base64-inline them by default (see the file's own header comment): a previous revision called
-   `scryfall/images.js`'s `inlineCardImages` here to embed every card's image, and it broke real
+   `scryfall/images.ts`'s `inlineCardImages` here to embed every card's image, and it broke real
    decks — the MCP tool response (this JSON, plus `html_report` embedding a second copy of it) has a
    hard client-enforced size cap (observed ~1MB), and ~90 inlined images alone already blow past that.
    Measured: the same ~100-card `actual_output` payload is ~38KB with plain image URLs vs. >1.6MB
    inlined. `inlineCardImages` still exists and works, for the separate case of manually re-embedding
    images before publishing the rendered HTML as a shareable web Artifact elsewhere (not subject to
    the MCP tool-result cap) — it's just not called by this default pipeline.
-4. `delivery/html_renderer.js`'s `renderDeckReportHtml(...)` loads `delivery/deck_report_template.html`
+4. `delivery/html_renderer.ts`'s `renderDeckReportHtml(...)` loads `delivery/deck_report_template.html`
    from disk and does the templating **server-side** — swaps its placeholder `DECK_DATA` for the real
    `{ userDefinedScope, actualOutput }` via an anchored string replace, and strips the file's own
    "boilerplate reference only" comment. This is deliberate: the calling Claude model is NOT expected to
    reconstruct the report from the template each time (that would risk drift/bugs) — the MCP renders one
    complete HTML string (`html_report`) instead.
-5. `index.js`'s `writeReportFile(deck_name, htmlReport)` also saves that same HTML to `reports/`
-   (gitignored, resolved next to `index.js` via `import.meta.url` so it's stable regardless of cwd) and
-   returns the path as `report_path`. This is the *primary* way a user actually views the report: opening
+5. `run-checks-and-deliver.ts`'s own `writeReportFile(deck_name, htmlReport)` also saves that same HTML
+   to the user's Downloads folder (`SCRYFALL_MCP_REPORTS_DIR` env var override for tests) and returns
+   the path as `report_path`. This (and `renderDeckReportHtml`'s template `readFileSync`, next) are
+   the TWO genuinely local-machine-only steps in this pipeline — see this file's own header comment for
+   the future-remote-transport caveat (not built yet): a Workers deployment would need to swap the
+   template for a bundled string and drop the local file write entirely. This is the *primary* way a
+   user actually views the report today: opening
    `report_path` in a real browser has no CSP restriction, so the plain Scryfall image URLs above load
    normally there — unlike a claude.ai/Code Artifact, which is why the tool descriptions tell Claude to
    surface `report_path` to the user rather than only relying on `html_report` being published as one. A
@@ -293,7 +351,7 @@ swap made *during* building, not only once at the very end — a swap can silent
 or color identity, and nothing else re-checks it.
 
 If `delivery/deck_report_template.html`'s structure changes (new sections, renamed the `DECK_DATA`/
-`renderDeckReport` anchor, etc.), `html_renderer.js`'s anchors must be updated to match — it throws a
+`renderDeckReport` anchor, etc.), `html_renderer.ts`'s anchors must be updated to match — it throws a
 clear error rather than silently falling back to the file's own placeholder example data if the anchors
 don't match.
 
@@ -306,12 +364,13 @@ and the current focus here is the core MCP structure/delivery pipeline plus the 
 database. This repo has no copy of that schema (see the `manaramp` repo's `src/lib/server/schema/`)
 — the MCP only ever reaches it over HTTP, via `manaramp.com`, never a direct Mongo connection, so it
 has no need for the database's own validator schema (see that repo's CLAUDE.md for the reasoning).
-`delivery/create_playtest_room.js` (the room-creation + deck-load glue) still exists and works
-standalone but is not imported by `index.js`.
+`delivery/create_playtest_room.ts` (the room-creation + deck-load glue) still exists and works
+standalone but is not imported by `tools/shared/run-checks-and-deliver.ts`.
 
 Re-enabling it later is a small, localized change on this side: import `createPlaytestRoom` in
-`index.js` and add a step to `runChecksAndDeliver` after report-building (e.g. threading a `room_url`
-into `actualOutput`/the rendered HTML) — the rest of the pipeline's shape is unaffected. See the
+`src/tools/shared/run-checks-and-deliver.ts` and add a step to `runChecksAndDeliver` after
+report-building (e.g. threading a `room_url` into `actualOutput`/the rendered HTML) — the rest of the
+pipeline's shape is unaffected. See the
 `manaramp` repo's own docs for the full autonomous-play design (an AI-controlled seat's turns are
 driven by the Worker's own Durable Object alarm calling the Anthropic API directly, not by this MCP
 server or any Claude conversation) if/when that work resumes.
