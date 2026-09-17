@@ -18,4 +18,8 @@ export default defineConfig({
   sourcemap: false,
   clean: true,
   target: "es2022",
+  // Without this, consuming manaramp-mcp as a real installed package (as opposed to a `file:`
+  // symlink straight at this repo) leaves every import from it implicitly `any` -- there were never
+  // .d.ts files next to dist/'s .js output, only a package.json `exports` map pointing at plain JS.
+  dts: true,
 });

@@ -4,8 +4,8 @@
   "type": "module",
   "main": "./dist/local/index.js",
   "exports": {
-    ".": "./dist/tools/index.js",
-    "./local": "./dist/local/index.js"
+    ".": { "types": "./dist/tools/index.d.ts", "default": "./dist/tools/index.js" },
+    "./local": { "types": "./dist/local/index.d.ts", "default": "./dist/local/index.js" }
   },
   "scripts": {
     "build": "tsup",
