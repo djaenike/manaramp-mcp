@@ -1,5 +1,11 @@
 node_modules/
-dist/
+# dist/ IS committed (2026-09-17) -- manaramp consumes this package as a `github:` dependency from
+# a clean CI checkout (Cloudflare's build) that can't reliably run this repo's own `prepare`/build
+# step (confirmed: even a plain local `npm install` silently skipped devDependencies+prepare for a
+# git-sourced dependency, and Cloudflare's own npm additionally gates lifecycle scripts behind an
+# "allow-scripts" allowlist) -- so dist/ has to already be real, working files in the git tree
+# itself, not a build artifact regenerated on install. Rebuild + recommit dist/ (`npm run build`)
+# before pushing any src/ change that should reach manaramp.
 arena_settings.json
 *.mcpb
 *.log
