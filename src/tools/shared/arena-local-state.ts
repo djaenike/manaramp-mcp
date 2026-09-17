@@ -2,15 +2,20 @@
  * tools/shared/arena-local-state.ts
  *
  * Local-machine state shared by BOTH Arena tools (arena_draft_assistance / arena_draft_game_advice)
- * -- grpId->card disk cache, remembered player_log_path/user_id settings, and the card_ratings CSV
- * drop-in folder. Factored into one shared module (rather than duplicated per tool file) because a
- * grpId resolved during a draft needs to still be cache-hit during that same match's game-advice
- * calls, and both tools need the SAME remembered player_log_path.
+ * -- grpId->card disk cache and remembered player_log_path/user_id settings. Factored into one
+ * shared module (rather than duplicated per tool file) because a grpId resolved during a draft
+ * needs to still be cache-hit during that same match's game-advice calls, and both tools need the
+ * SAME remembered player_log_path.
+ *
+ * The card_ratings CSV drop-in folder that used to live here was removed 2026-09-17 -- superseded
+ * by arena_draft_assistance's remote format_stats_manaramp lookup (real 17Lands data straight from
+ * manaramp's own database, no manual export needed now that a MANARAMP_API_KEY is required to
+ * activate this extension at all -- see manifest.json's user_config).
  *
  * This is deliberately kept under tools/, not local/, even though everything in this file is a real
  * disk/filesystem concern: arena_draft_assistance and arena_draft_game_advice are THE two tools that
  * are fundamentally local-machine-only forever (they read a local Player.log via fs.statSync/
- * readSync -- see sub-tools/arena-log/log_reader.ts) and were already called out in the repo's
+ * readSync -- see functions/arena-log/log_reader.ts) and were already called out in the repo's
  * conversion plan as never being part of a future remote transport's tool set, unlike the other 6
  * tools in tools/. Keeping their local-only state next to them (rather than awkwardly injected from
  * local/index.ts through the flat, uniform tool-registration loop there) keeps that loop simple and
@@ -18,20 +23,18 @@
  * arena-draft-assistance.ts / arena-draft-game-advice.ts (or this module) at all.
  *
  * Paths below are resolved relative to the PACKAGE ROOT (not this file's own directory) via a fixed
- * upward walk, so grpid_cache.json / arena_settings.json / card_ratings/ end up in the same place
- * they always have (next to package.json, at the repo root) regardless of whether this runs from
- * src/ (tsx, dev) or dist/ (built) -- both sit exactly 3 directories below the package root
- * (src/tools/shared or dist/tools/shared), so a fixed "../../.." is stable across both.
+ * upward walk, so grpid_cache.json / arena_settings.json end up in the same place they always have
+ * (next to package.json, at the repo root) regardless of whether this runs from src/ (tsx, dev) or
+ * dist/ (built) -- both sit exactly 3 directories below the package root (src/tools/shared or
+ * dist/tools/shared), so a fixed "../../.." is stable across both.
  */
 
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { loadSettings, saveSettings } from "../../sub-tools/arena-log/settings.js";
-import type { CardRatingRow } from "../../sub-tools/arena-log/card_ratings.js";
-import { searchCards } from "../../sub-tools/scryfall/cards.js";
-import type { ResolvedCard } from "../../sub-tools/arena-log/grpid_resolver.js";
+import { loadSettings, saveSettings } from "../../functions/parsing/settings.js";
+import type { ResolvedCard } from "../../functions/parsing/grpid_resolver.js";
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -85,10 +88,26 @@ async function withPersistentGrpIdCache<T>(resolveFn: (cache: Map<number, Resolv
   return result;
 }
 
-// Batched grpId -> real card resolution via this server's own search_cards, reused by both
-// Arena tools. arena_id:<id> confirmed live against Scryfall's search syntax.
-async function searchCardsForResolver(query: string) {
-  return searchCards(query);
+// Batched grpId -> real card resolution via manaramp's own Mongo-backed query_cards tool, over
+// the authenticated remote client (2026-09-17, second pass -- see CLAUDE.md's "Arena tools reach
+// manaramp too now" section) -- NOT a live Scryfall call anymore, unlike the original design.
+// Arena tools have no direct Mongo connection of their own (see tools/types.ts's McpContext
+// header), so this is the one remote round trip that resolves a whole batch of still-unresolved
+// grpIds at once (see grpid_resolver.ts's BatchResolveFn contract).
+async function resolveGrpIdsViaManaramp(grpIds: number[]): Promise<Map<number, ResolvedCard>> {
+  const { callRemoteTool } = await import("./remote-client.js");
+  const cards = await callRemoteTool<Array<{ arena_grp_ids: number[] } & Record<string, unknown>>>(
+    "query_cards",
+    { arena_grp_ids: grpIds }
+  );
+  const byGrpId = new Map<number, ResolvedCard>();
+  const wanted = new Set(grpIds);
+  for (const card of cards) {
+    for (const id of card.arena_grp_ids ?? []) {
+      if (wanted.has(id)) byGrpId.set(id, card);
+    }
+  }
+  return byGrpId;
 }
 
 // --- Locally-remembered settings (machine-specific -- gitignored, unlike card_ratings/ or
@@ -102,33 +121,65 @@ async function searchCardsForResolver(query: string) {
 // (same reasoning as SCRYFALL_MCP_REPORTS_DIR in tools/shared/run-checks-and-deliver.ts).
 const SETTINGS_PATH = process.env.SCRYFALL_MCP_SETTINGS_PATH || join(PACKAGE_ROOT, "arena_settings.json");
 
+// manaramp's MCP Setup page (manaramp.com/mcp-setup) lets a user save their Player.log path ONCE,
+// server-side, instead of pasting it into a Claude conversation (2026-09-17). This is a plain
+// Bearer-authenticated REST GET, NOT an MCP tool call (see that route's own header for why:
+// mcp_keys lives under the full-access MONGODB_URI, a trust tier manaramp-mcp's own McpContext
+// never gets access to) -- so this hits it directly with fetch, not callRemoteTool.
+const MANARAMP_SETTINGS_URL = process.env.MANARAMP_SETTINGS_URL || "https://manaramp.com/api/mcp-settings";
+
+/** Best-effort: returns null on ANY failure (no API key configured, network error, account has
+ *  none saved) -- the caller's existing "ask the user in-chat" fallback already handles null fine,
+ *  so this never needs to surface an error of its own. */
+async function fetchPlayerLogPathFromManaramp(): Promise<string | null> {
+  const apiKey = process.env.MANARAMP_API_KEY;
+  if (!apiKey) return null;
+  try {
+    const res = await fetch(MANARAMP_SETTINGS_URL, { headers: { Authorization: `Bearer ${apiKey}` } });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { player_log_path?: string | null };
+    return body.player_log_path ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Resolves player_log_path for a call: whatever was explicitly passed wins (and gets remembered
- * for next time); otherwise falls back to whatever was last remembered. Returns null if neither
- * is available (first-ever call, nothing provided).
+ * Resolves player_log_path for a call, in order: (1) whatever was explicitly passed wins, and gets
+ * remembered locally for next time; (2) whatever was last remembered on THIS machine; (3) whatever
+ * the user saved on manaramp.com/mcp-setup, fetched ONCE over the network and immediately cached
+ * locally so every later call stays on the fast local-only path above -- closes the loop the
+ * original design intended (configure it on the website, not in a Claude conversation). Returns
+ * null only if none of the three produced anything (first-ever call, nothing saved anywhere).
  */
-function resolvePlayerLogPath(providedPath?: string | null): string | null {
+async function resolvePlayerLogPath(providedPath?: string | null): Promise<string | null> {
   if (providedPath) {
     if (providedPath !== loadSettings(SETTINGS_PATH).player_log_path) {
       saveSettings(SETTINGS_PATH, { player_log_path: providedPath });
     }
     return providedPath;
   }
-  return loadSettings(SETTINGS_PATH).player_log_path ?? null;
+
+  const remembered = loadSettings(SETTINGS_PATH).player_log_path;
+  if (remembered) return remembered;
+
+  const fromServer = await fetchPlayerLogPathFromManaramp();
+  if (fromServer) {
+    saveSettings(SETTINGS_PATH, { player_log_path: fromServer });
+    return fromServer;
+  }
+  return null;
 }
 
 /**
- * Returns a stable, anonymous per-install identifier (for the not-yet-built shared MongoDB
- * contribution scheme -- see the `manaramp` repo's src/lib/server/schema/draft_sessions.ts,
- * the schema's one canonical copy) -- generated once and persisted in the same
+ * Returns a stable, anonymous per-install identifier -- generated once and persisted in the same
  * arena_settings.json this whole module already uses for player_log_path, then reused forever
- * after. There's no "on install" hook in the .mcpb/desktop extension format itself (checked the
- * manifest spec directly -- it's purely declarative, no lifecycle scripts), so this is triggered
- * by first actual need rather than the literal install moment; the practical result is identical
- * either way, since nothing observable depends on WHEN it's generated, only that it stays the
- * same after. Deliberately anonymous (a random UUID, not tied to any real identity) -- see the
- * open trust-model question already flagged in that schema file's own comment before this is
- * wired into anything that writes to a shared database for real.
+ * after. NOT what identifies a push_draft_result/push_game_log call to manaramp -- those are
+ * identified by the real, authenticated ownerUserId resolved server-side from MANARAMP_API_KEY
+ * (see tools/push-draft-result.ts / push-game-log.ts), superseding the anonymous-UUID design this
+ * was originally built for (the old draft_sessions.ts schema in the `manaramp` repo, since
+ * replaced). Currently unused by any real tool handler -- kept as a tested utility, re-exported
+ * from local/index.ts for tests only.
  */
 function getOrCreateUserId(): string {
   const existing = loadSettings(SETTINGS_PATH).user_id;
@@ -140,20 +191,7 @@ function getOrCreateUserId(): string {
   return userId;
 }
 
-// --- Card ratings drop-in folder --------------------------------------------------------------
-// Unlike REPORTS_DIR (tools/shared/run-checks-and-deliver.ts), this one deliberately stays at the
-// package root: the point is "drop a 17Lands CSV export in the same folder as the server" rather
-// than remembering/typing a path each time, which arena_draft_assistance falls back to
-// auto-discovering (most recently modified .csv wins) when card_ratings_csv_path isn't given
-// explicitly. A temporary stand-in for a real store (SQLite, etc.) -- fine for "one file, swap it
-// when you re-export," not meant to scale past that.
-const CARD_RATINGS_DIR = join(PACKAGE_ROOT, "card_ratings");
-try { mkdirSync(CARD_RATINGS_DIR, { recursive: true }); } catch { /* best-effort; handled again on use */ }
-
-const cardRatingsCache = new Map<string, Map<string, CardRatingRow>>();
-
 export {
   CARD_CACHE_DIR, GRPID_CACHE_PATH, grpIdCardCache, withPersistentGrpIdCache,
-  searchCardsForResolver, SETTINGS_PATH, resolvePlayerLogPath, getOrCreateUserId,
-  CARD_RATINGS_DIR, cardRatingsCache,
+  resolveGrpIdsViaManaramp, SETTINGS_PATH, resolvePlayerLogPath, getOrCreateUserId,
 };

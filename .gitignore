@@ -1,6 +1,7 @@
 node_modules/
 dist/
 arena_settings.json
+*.mcpb
 *.log
 .DS_Store
 Thumbs.db

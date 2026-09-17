@@ -1,47 +1,64 @@
 /**
  * tools/index.ts
- * Barrel: exports every registered tool definition (8 total, same count as originally wired into
- * index.js) both individually by name and as one `tools` array. This is the package's "." export
- * (see package.json's `exports` map) -- a future remote MCP endpoint (a separate, later phase, in
- * the sibling `manaramp` Cloudflare Workers repo) can `import { tools } from 'manaramp-mcp'` and
- * get just these definitions, without pulling in local/index.ts's stdio bootstrap or any
- * local-machine-only code (disk caches, settings file, report-to-Downloads writing).
+ * Barrel: exports every registered tool definition. This is the package's "." export (see
+ * package.json's `exports` map) -- manaramp's remote `/mcp` route imports `tools` from here and
+ * registers each one against a request-scoped McpContext (see tools/types.ts).
  *
- * NOTE: arena_draft_assistance / arena_draft_game_advice are included here for completeness (same
- * 8-tool count as today) but are fundamentally local-machine-only (they read a real Player.log
- * file) -- see tools/shared/arena-local-state.ts's header comment. A future remote transport would
- * only ever import/register the other 6.
+ * 3 PRIMARY tools (2026-09-17, sixth pass -- functions/ split into parsing/push/query/reference
+ * subfolders, and query_cards/query_synergies/query_combos/query_decks/query_draft_results/
+ * push_game_log/push_draft_result all stopped being separate CONVERSATIONAL tools): `manage_deck`,
+ * `arena_draft_assistance`, `arena_game_advice`. Each one decides for itself which functions/ it
+ * needs and which of their fields matter -- see each file's own header. There is no more
+ * standalone card/synergy/combo lookup tool for a calling model to reach for; manage_deck is the
+ * only conversational entry point to card/deck data, and its own returned facts are the feedback
+ * loop for refining a decklist (see manage-deck.ts's header).
+ *
+ * `tools` (4) is what the remote endpoint registers -- running in-process with a real Db (see
+ * McpContext in tools/types.ts): the 1 primary Mongo tool (`manage_deck`) PLUS the 3 internal-only
+ * wrappers from tools/internal-tools.ts (`query_cards`, `push_draft_result`, `push_game_log`) --
+ * those exist only so the local Arena tools' remote HTTP calls have something to call (see that
+ * file's header), not for conversational use.
+ *
+ * `localTools` (3) is what local/index.ts's stdio bootstrap registers instead: the 2 genuinely
+ * local Arena tools (read a local Player.log file, can never run remotely -- a Worker has no
+ * filesystem) PLUS a remote-proxied version of `manage_deck` (via tools/shared/remote-proxy.ts) --
+ * same name/description/schema, but the handler calls manaramp.com/mcp over HTTP instead of
+ * touching a Db directly, using the same MANARAMP_API_KEY the Arena tools' own remote calls already
+ * need (manifest.json's user_config). This makes the .mcpb a complete, self-sufficient MCP server
+ * on its own: deck building AND Arena assistance from one Claude Desktop install, no separate
+ * remote connector needed. The 3 internal tools are never proxied for local use -- they're side
+ * effects the Arena tools call themselves via remote-client.ts directly, not something the calling
+ * model invokes.
  */
 
-import { newDeckCreationTool, existingDeckCleanupTool } from "./deck-building.js";
-import { searchCardsTool } from "./search-cards.js";
-import { getCardSynergiesTool } from "./get-card-synergies.js";
-import { findCombosTool } from "./find-combos.js";
-import { getCardScriptTool } from "./get-card-script.js";
+import { manageDeckTool } from "./manage-deck.js";
 import { arenaDraftAssistanceTool } from "./arena-draft-assistance.js";
-import { arenaDraftGameAdviceTool } from "./arena-draft-game-advice.js";
+import { arenaDraftGameAdviceTool } from "./arena-game-advice.js";
+import { queryCardsTool, pushDraftResultTool, pushGameLogTool } from "./internal-tools.js";
+import { toRemoteProxy } from "./shared/remote-proxy.js";
 import type { ToolDefinition } from "./types.js";
 
 const tools: ToolDefinition<any>[] = [
-  newDeckCreationTool,
-  existingDeckCleanupTool,
-  searchCardsTool,
-  getCardSynergiesTool,
-  findCombosTool,
-  getCardScriptTool,
+  manageDeckTool,
+  queryCardsTool,
+  pushDraftResultTool,
+  pushGameLogTool,
+];
+
+const localTools: ToolDefinition<any>[] = [
   arenaDraftAssistanceTool,
   arenaDraftGameAdviceTool,
+  toRemoteProxy(manageDeckTool),
 ];
 
 export {
   tools,
-  newDeckCreationTool,
-  existingDeckCleanupTool,
-  searchCardsTool,
-  getCardSynergiesTool,
-  findCombosTool,
-  getCardScriptTool,
+  localTools,
+  manageDeckTool,
+  queryCardsTool,
+  pushDraftResultTool,
+  pushGameLogTool,
   arenaDraftAssistanceTool,
   arenaDraftGameAdviceTool,
 };
-export type { ToolDefinition } from "./types.js";
+export type { ToolDefinition, McpContext, McpToolResponse } from "./types.js";

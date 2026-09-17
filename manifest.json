@@ -14,7 +14,18 @@
       "args": [
         "${__dirname}/dist/local/index.js"
       ],
-      "env": {}
+      "env": {
+        "MANARAMP_API_KEY": "${user_config.manaramp_api_key}"
+      }
+    }
+  },
+  "user_config": {
+    "manaramp_api_key": {
+      "type": "string",
+      "title": "Manaramp API Key",
+      "description": "From your manaramp.com profile page (MCP API key section). Required so the Arena tools can push finished draft/match logs to your account and pull real 17Lands win-rate data for pack cards -- both live in manaramp's own database, not on this machine.",
+      "sensitive": true,
+      "required": true
     }
   },
   "license": "MIT"

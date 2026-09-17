@@ -2,3 +2,21 @@ extensions/
 .git/
 .gitignore
 *.log
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+
+# Dev-only content -- none of this is needed at runtime (the packaged server only ever runs
+# dist/local/index.js, per manifest.json's entry_point). Without these, a .mcpb rebuild bundles
+# the entire TypeScript source tree -- none of which .gitignore protects here, since .mcpbignore is
+# a separate, unrelated exclusion list that packaging tools read (added 2026-09-17, found while
+# auditing what tests/ was actually used for; that whole folder was removed the same day -- no test
+# files anywhere in this repo anymore, so there's nothing left to exclude for that reason).
+src/
+tsconfig.json
+tsup.config.ts
+.vscode/
+readme.md
+CLAUDE.md
+package-lock.json
