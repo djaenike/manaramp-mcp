@@ -29,15 +29,30 @@ import { ResolvedCard } from '../../functions/parsing/grpid_resolver.js';
  * (next to package.json, at the repo root) regardless of whether this runs from src/ (tsx, dev) or
  * dist/ (built) -- both sit exactly 3 directories below the package root (src/tools/shared or
  * dist/tools/shared), so a fixed "../../.." is stable across both.
+ *
+ * CORRECTION 2026-09-18: every path/cache computation here MUST be lazy (computed on first actual
+ * use, not at module top level) -- confirmed live via `wrangler dev`'s real Workers runtime
+ * (workerd), which is what actually surfaced this: manaramp's remote /mcp Worker crashed on EVERY
+ * request, `TypeError: The "path" argument must be of type string or an instance of URL. Received
+ * undefined`, thrown from `fileURLToPath(import.meta.url)` -- Workers bundles everything into one
+ * script with no real file:// URL for `import.meta.url`, so this threw the instant the module was
+ * evaluated, regardless of whether an Arena tool was ever actually called. That's the trap: even
+ * though the two Arena tools are local-only and never REGISTERED remotely (see this file's own
+ * header above), manaramp-mcp's `tools` barrel unconditionally IMPORTS every tool file to build
+ * its exported array, so this module's top-level code ran (and crashed) on the Worker regardless.
+ * Plain `vite dev`/`tsx` never caught this because both run on real Node, where `import.meta.url`
+ * is a genuine file path -- only the actual Workers runtime (`wrangler dev`/deployed prod) exposed
+ * it. Every export below is now a memoized getter instead of an eagerly-computed top-level
+ * constant, so nothing here runs until an Arena tool handler genuinely calls it.
  */
 
-declare const CARD_CACHE_DIR: string;
-declare const GRPID_CACHE_PATH: string;
-declare const grpIdCardCache: Map<number, ResolvedCard>;
+declare function getCardCacheDir(): string;
+declare function getGrpIdCachePath(): string;
+declare function getGrpIdCardCache(): Map<number, ResolvedCard>;
 /** Runs a grpId-resolving call, then persists the cache to disk ONLY if it actually grew. */
 declare function withPersistentGrpIdCache<T>(resolveFn: (cache: Map<number, ResolvedCard>) => Promise<T>): Promise<T>;
 declare function resolveGrpIdsViaManaramp(grpIds: number[]): Promise<Map<number, ResolvedCard>>;
-declare const SETTINGS_PATH: string;
+declare function getSettingsPath(): string;
 /**
  * Resolves player_log_path for a call, in order: (1) whatever was explicitly passed wins, and gets
  * remembered locally for next time; (2) whatever was last remembered on THIS machine; (3) whatever
@@ -59,4 +74,4 @@ declare function resolvePlayerLogPath(providedPath?: string | null): Promise<str
  */
 declare function getOrCreateUserId(): string;
 
-export { CARD_CACHE_DIR, GRPID_CACHE_PATH, SETTINGS_PATH, getOrCreateUserId, grpIdCardCache, resolveGrpIdsViaManaramp, resolvePlayerLogPath, withPersistentGrpIdCache };
+export { getCardCacheDir, getGrpIdCachePath, getGrpIdCardCache, getOrCreateUserId, getSettingsPath, resolveGrpIdsViaManaramp, resolvePlayerLogPath, withPersistentGrpIdCache };

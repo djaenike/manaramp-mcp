@@ -2,13 +2,20 @@ import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadSettings, saveSettings } from "../../functions/parsing/settings.js";
-const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const CARD_CACHE_DIR = join(PACKAGE_ROOT, "card_cache");
-const GRPID_CACHE_PATH = join(CARD_CACHE_DIR, "grpid_cache.json");
+let packageRoot;
+function getPackageRoot() {
+  return packageRoot ??= join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+}
+function getCardCacheDir() {
+  return join(getPackageRoot(), "card_cache");
+}
+function getGrpIdCachePath() {
+  return join(getCardCacheDir(), "grpid_cache.json");
+}
 function loadGrpIdCache() {
   const cache = /* @__PURE__ */ new Map();
   try {
-    const raw = JSON.parse(readFileSync(GRPID_CACHE_PATH, "utf8"));
+    const raw = JSON.parse(readFileSync(getGrpIdCachePath(), "utf8"));
     for (const [grpId, card] of Object.entries(raw)) {
       cache.set(Number(grpId), card);
     }
@@ -18,16 +25,20 @@ function loadGrpIdCache() {
 }
 function saveGrpIdCache(cache) {
   try {
-    mkdirSync(CARD_CACHE_DIR, { recursive: true });
-    writeFileSync(GRPID_CACHE_PATH, JSON.stringify(Object.fromEntries(cache), null, 2));
+    mkdirSync(getCardCacheDir(), { recursive: true });
+    writeFileSync(getGrpIdCachePath(), JSON.stringify(Object.fromEntries(cache), null, 2));
   } catch {
   }
 }
-const grpIdCardCache = loadGrpIdCache();
+let grpIdCardCache;
+function getGrpIdCardCache() {
+  return grpIdCardCache ??= loadGrpIdCache();
+}
 async function withPersistentGrpIdCache(resolveFn) {
-  const sizeBefore = grpIdCardCache.size;
-  const result = await resolveFn(grpIdCardCache);
-  if (grpIdCardCache.size > sizeBefore) saveGrpIdCache(grpIdCardCache);
+  const cache = getGrpIdCardCache();
+  const sizeBefore = cache.size;
+  const result = await resolveFn(cache);
+  if (cache.size > sizeBefore) saveGrpIdCache(cache);
   return result;
 }
 async function resolveGrpIdsViaManaramp(grpIds) {
@@ -45,7 +56,9 @@ async function resolveGrpIdsViaManaramp(grpIds) {
   }
   return byGrpId;
 }
-const SETTINGS_PATH = process.env.SCRYFALL_MCP_SETTINGS_PATH || join(PACKAGE_ROOT, "arena_settings.json");
+function getSettingsPath() {
+  return process.env.SCRYFALL_MCP_SETTINGS_PATH || join(getPackageRoot(), "arena_settings.json");
+}
 const MANARAMP_SETTINGS_URL = process.env.MANARAMP_SETTINGS_URL || "https://manaramp.com/api/mcp-settings";
 async function fetchPlayerLogPathFromManaramp() {
   const apiKey = process.env.MANARAMP_API_KEY;
@@ -60,34 +73,36 @@ async function fetchPlayerLogPathFromManaramp() {
   }
 }
 async function resolvePlayerLogPath(providedPath) {
+  const settingsPath = getSettingsPath();
   if (providedPath) {
-    if (providedPath !== loadSettings(SETTINGS_PATH).player_log_path) {
-      saveSettings(SETTINGS_PATH, { player_log_path: providedPath });
+    if (providedPath !== loadSettings(settingsPath).player_log_path) {
+      saveSettings(settingsPath, { player_log_path: providedPath });
     }
     return providedPath;
   }
-  const remembered = loadSettings(SETTINGS_PATH).player_log_path;
+  const remembered = loadSettings(settingsPath).player_log_path;
   if (remembered) return remembered;
   const fromServer = await fetchPlayerLogPathFromManaramp();
   if (fromServer) {
-    saveSettings(SETTINGS_PATH, { player_log_path: fromServer });
+    saveSettings(settingsPath, { player_log_path: fromServer });
     return fromServer;
   }
   return null;
 }
 function getOrCreateUserId() {
-  const existing = loadSettings(SETTINGS_PATH).user_id;
+  const settingsPath = getSettingsPath();
+  const existing = loadSettings(settingsPath).user_id;
   if (existing) return existing;
   const userId = crypto.randomUUID();
-  saveSettings(SETTINGS_PATH, { user_id: userId });
+  saveSettings(settingsPath, { user_id: userId });
   return userId;
 }
 export {
-  CARD_CACHE_DIR,
-  GRPID_CACHE_PATH,
-  SETTINGS_PATH,
+  getCardCacheDir,
+  getGrpIdCachePath,
+  getGrpIdCardCache,
   getOrCreateUserId,
-  grpIdCardCache,
+  getSettingsPath,
   resolveGrpIdsViaManaramp,
   resolvePlayerLogPath,
   withPersistentGrpIdCache

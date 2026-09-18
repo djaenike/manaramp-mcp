@@ -27,6 +27,21 @@
  * (next to package.json, at the repo root) regardless of whether this runs from src/ (tsx, dev) or
  * dist/ (built) -- both sit exactly 3 directories below the package root (src/tools/shared or
  * dist/tools/shared), so a fixed "../../.." is stable across both.
+ *
+ * CORRECTION 2026-09-18: every path/cache computation here MUST be lazy (computed on first actual
+ * use, not at module top level) -- confirmed live via `wrangler dev`'s real Workers runtime
+ * (workerd), which is what actually surfaced this: manaramp's remote /mcp Worker crashed on EVERY
+ * request, `TypeError: The "path" argument must be of type string or an instance of URL. Received
+ * undefined`, thrown from `fileURLToPath(import.meta.url)` -- Workers bundles everything into one
+ * script with no real file:// URL for `import.meta.url`, so this threw the instant the module was
+ * evaluated, regardless of whether an Arena tool was ever actually called. That's the trap: even
+ * though the two Arena tools are local-only and never REGISTERED remotely (see this file's own
+ * header above), manaramp-mcp's `tools` barrel unconditionally IMPORTS every tool file to build
+ * its exported array, so this module's top-level code ran (and crashed) on the Worker regardless.
+ * Plain `vite dev`/`tsx` never caught this because both run on real Node, where `import.meta.url`
+ * is a genuine file path -- only the actual Workers runtime (`wrangler dev`/deployed prod) exposed
+ * it. Every export below is now a memoized getter instead of an eagerly-computed top-level
+ * constant, so nothing here runs until an Arena tool handler genuinely calls it.
  */
 
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
@@ -36,7 +51,10 @@ import { fileURLToPath } from "node:url";
 import { loadSettings, saveSettings } from "../../functions/parsing/settings.js";
 import type { ResolvedCard } from "../../functions/parsing/grpid_resolver.js";
 
-const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+let packageRoot: string | undefined;
+function getPackageRoot(): string {
+  return (packageRoot ??= join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".."));
+}
 
 // --- grpId -> card cache, persisted to disk ------------------------------------------------
 // A grpId always maps to the same real card (or, for a genuine miss, permanently maps to nothing)
@@ -51,13 +69,18 @@ const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "
 // -- so this is backed by a JSON file next to the package root (like card_ratings/) that only ever
 // grows, shared by BOTH Arena tools and every draft/game/log path this server ever sees. Same
 // "flat file until you set up SQL" stopgap as card_ratings/, deliberately.
-const CARD_CACHE_DIR = join(PACKAGE_ROOT, "card_cache");
-const GRPID_CACHE_PATH = join(CARD_CACHE_DIR, "grpid_cache.json");
+function getCardCacheDir(): string {
+  return join(getPackageRoot(), "card_cache");
+}
+
+function getGrpIdCachePath(): string {
+  return join(getCardCacheDir(), "grpid_cache.json");
+}
 
 function loadGrpIdCache(): Map<number, ResolvedCard> {
   const cache = new Map<number, ResolvedCard>();
   try {
-    const raw = JSON.parse(readFileSync(GRPID_CACHE_PATH, "utf8"));
+    const raw = JSON.parse(readFileSync(getGrpIdCachePath(), "utf8"));
     for (const [grpId, card] of Object.entries(raw)) {
       cache.set(Number(grpId), card as ResolvedCard);
     }
@@ -70,21 +93,25 @@ function loadGrpIdCache(): Map<number, ResolvedCard> {
 
 function saveGrpIdCache(cache: Map<number, ResolvedCard>): void {
   try {
-    mkdirSync(CARD_CACHE_DIR, { recursive: true });
-    writeFileSync(GRPID_CACHE_PATH, JSON.stringify(Object.fromEntries(cache), null, 2));
+    mkdirSync(getCardCacheDir(), { recursive: true });
+    writeFileSync(getGrpIdCachePath(), JSON.stringify(Object.fromEntries(cache), null, 2));
   } catch {
     // Best-effort -- a failed disk write shouldn't break the response; the in-memory cache still
     // helps for the rest of this process's life either way.
   }
 }
 
-const grpIdCardCache = loadGrpIdCache();
+let grpIdCardCache: Map<number, ResolvedCard> | undefined;
+function getGrpIdCardCache(): Map<number, ResolvedCard> {
+  return (grpIdCardCache ??= loadGrpIdCache());
+}
 
 /** Runs a grpId-resolving call, then persists the cache to disk ONLY if it actually grew. */
 async function withPersistentGrpIdCache<T>(resolveFn: (cache: Map<number, ResolvedCard>) => Promise<T>): Promise<T> {
-  const sizeBefore = grpIdCardCache.size;
-  const result = await resolveFn(grpIdCardCache);
-  if (grpIdCardCache.size > sizeBefore) saveGrpIdCache(grpIdCardCache);
+  const cache = getGrpIdCardCache();
+  const sizeBefore = cache.size;
+  const result = await resolveFn(cache);
+  if (cache.size > sizeBefore) saveGrpIdCache(cache);
   return result;
 }
 
@@ -119,7 +146,9 @@ async function resolveGrpIdsViaManaramp(grpIds: number[]): Promise<Map<number, R
 // single new conversation, even the day right after they already gave it once.
 // SCRYFALL_MCP_SETTINGS_PATH override exists so tests never read/write the real settings file
 // (same reasoning as SCRYFALL_MCP_REPORTS_DIR in tools/shared/run-checks-and-deliver.ts).
-const SETTINGS_PATH = process.env.SCRYFALL_MCP_SETTINGS_PATH || join(PACKAGE_ROOT, "arena_settings.json");
+function getSettingsPath(): string {
+  return process.env.SCRYFALL_MCP_SETTINGS_PATH || join(getPackageRoot(), "arena_settings.json");
+}
 
 // manaramp's MCP Setup page (manaramp.com/mcp-setup) lets a user save their Player.log path ONCE,
 // server-side, instead of pasting it into a Claude conversation (2026-09-17). This is a plain
@@ -153,19 +182,20 @@ async function fetchPlayerLogPathFromManaramp(): Promise<string | null> {
  * null only if none of the three produced anything (first-ever call, nothing saved anywhere).
  */
 async function resolvePlayerLogPath(providedPath?: string | null): Promise<string | null> {
+  const settingsPath = getSettingsPath();
   if (providedPath) {
-    if (providedPath !== loadSettings(SETTINGS_PATH).player_log_path) {
-      saveSettings(SETTINGS_PATH, { player_log_path: providedPath });
+    if (providedPath !== loadSettings(settingsPath).player_log_path) {
+      saveSettings(settingsPath, { player_log_path: providedPath });
     }
     return providedPath;
   }
 
-  const remembered = loadSettings(SETTINGS_PATH).player_log_path;
+  const remembered = loadSettings(settingsPath).player_log_path;
   if (remembered) return remembered;
 
   const fromServer = await fetchPlayerLogPathFromManaramp();
   if (fromServer) {
-    saveSettings(SETTINGS_PATH, { player_log_path: fromServer });
+    saveSettings(settingsPath, { player_log_path: fromServer });
     return fromServer;
   }
   return null;
@@ -182,16 +212,17 @@ async function resolvePlayerLogPath(providedPath?: string | null): Promise<strin
  * from local/index.ts for tests only.
  */
 function getOrCreateUserId(): string {
-  const existing = loadSettings(SETTINGS_PATH).user_id;
+  const settingsPath = getSettingsPath();
+  const existing = loadSettings(settingsPath).user_id;
   if (existing) return existing;
   // Global Web Crypto (no import needed -- stable global since Node 19) rather than
   // node:crypto's randomUUID import.
   const userId = crypto.randomUUID();
-  saveSettings(SETTINGS_PATH, { user_id: userId });
+  saveSettings(settingsPath, { user_id: userId });
   return userId;
 }
 
 export {
-  CARD_CACHE_DIR, GRPID_CACHE_PATH, grpIdCardCache, withPersistentGrpIdCache,
-  resolveGrpIdsViaManaramp, SETTINGS_PATH, resolvePlayerLogPath, getOrCreateUserId,
+  getCardCacheDir, getGrpIdCachePath, getGrpIdCardCache, withPersistentGrpIdCache,
+  resolveGrpIdsViaManaramp, getSettingsPath, resolvePlayerLogPath, getOrCreateUserId,
 };
