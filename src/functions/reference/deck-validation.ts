@@ -2,7 +2,7 @@
  * functions/reference/deck-validation.ts (renamed from sub-tools/deck-building/consistency.ts,
  * 2026-09-17, sixth pass) -- PURE: takes already-fetched card data instead of querying Mongo
  * itself. It used to run its OWN `cards.find()` batch query, a THIRD independent implementation of
- * the same query functions/query/cards.ts's queryCards already does -- manage-deck.ts calls
+ * the same query functions/query/cards.ts's queryCards already does -- tools/shared/deck-analysis.ts (optimize_deck/publish_deck) calls
  * queryCards ONCE and passes the result in here, so there's exactly one place `cards` actually
  * gets queried.
  *
@@ -92,7 +92,7 @@ function validateDeck(cards: CardSummary[], commander_names: string[], deck_entr
   const isBasicLand = (card: CardSummary | undefined) => (card?.type_line ?? "").includes("Basic Land");
 
   // Per-card detail lookup, keyed by the exact deck-entry/commander name as supplied (not
-  // lowercased) -- manage-deck.ts needs oracle_id (persistence) and mana_cost/oracle_text/
+  // lowercased) -- tools/shared/deck-analysis.ts (optimize_deck/publish_deck) needs oracle_id (persistence) and mana_cost/oracle_text/
   // image_url per card, and reuses this instead of a second lookup.
   const cardDetails = new Map<string, CardDetail>();
   for (const name of allIdentifierNames) {
@@ -108,9 +108,19 @@ function validateDeck(cards: CardSummary[], commander_names: string[], deck_entr
     });
   }
 
+  // CORRECTION 2026-09-18: when NO commander name resolved to a real card, commanderColorSet stays
+  // empty -- which used to fall straight into the per-card check below, filtering EVERY card's
+  // color_identity against an empty allowed set and false-flagging every colored card as "outside
+  // commander's color identity" (confirmed live: Weftstalker Ardent, Squee Goblin Nabob,
+  // Reassembling Skeleton all cascaded into that violation just because the commander itself was
+  // `not_found`). commanderResolved tracks whether this is a real "colorless commander" (an actual
+  // resolved card with an empty color_identity, e.g. a truly colorless commander) vs. "couldn't even
+  // check" -- only the first is a legitimate empty set.
   const commanderColorSet = new Set<string>();
+  let commanderResolved = false;
   for (const name of commander_names) {
     const card = cardByName.get(name.toLowerCase());
+    if (card) commanderResolved = true;
     for (const c of card?.color_identity ?? []) commanderColorSet.add(c);
   }
 
@@ -135,10 +145,12 @@ function validateDeck(cards: CardSummary[], commander_names: string[], deck_entr
       duplicateViolations.push({ name: entry.name, qty: entry.qty });
     }
 
-    const cardColors: string[] = card.color_identity ?? [];
-    const offendingColors = cardColors.filter((c) => !commanderColorSet.has(c));
-    if (offendingColors.length) {
-      colorIdentityViolations.push({ name: entry.name, card_color_identity: cardColors, offending_colors: offendingColors });
+    if (commanderResolved) {
+      const cardColors: string[] = card.color_identity ?? [];
+      const offendingColors = cardColors.filter((c) => !commanderColorSet.has(c));
+      if (offendingColors.length) {
+        colorIdentityViolations.push({ name: entry.name, card_color_identity: cardColors, offending_colors: offendingColors });
+      }
     }
 
     if (card.legalities?.commander !== "legal") {
@@ -176,6 +188,9 @@ function validateDeck(cards: CardSummary[], commander_names: string[], deck_entr
   }
   if (colorIdentityViolations.length) {
     issues.push(`Outside commander's color identity: ${colorIdentityViolations.map((v) => v.name).join(", ")}`);
+  }
+  if (!commanderResolved && commander_names.length) {
+    issues.push(`Commander(s) not found in manaramp's card database (${commander_names.join(", ")}) -- cannot verify color identity for any card until this is fixed.`);
   }
   if (notCommanderLegal.length) {
     issues.push(`Not legal in Commander: ${notCommanderLegal.map((v) => `${v.name} (${v.status})`).join(", ")}`);

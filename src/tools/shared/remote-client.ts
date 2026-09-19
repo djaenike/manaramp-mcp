@@ -64,7 +64,7 @@ async function callRemoteTool<T = unknown>(toolName: string, args: Record<string
   }
 
   // MCP tool results wrap the actual payload as content: [{ type: "text", text: "<json>" }] --
-  // every remote tool here returns JSON.stringify'd text (see manage-deck.ts/search-cards.ts/
+  // every remote tool here returns JSON.stringify'd text (see tools/shared/deck-analysis.ts (optimize_deck/publish_deck)/search-cards.ts/
   // push-game-log.ts), so unwrap and parse it back into a real object rather than handing callers a
   // raw string.
   const text = body.result?.content?.[0]?.text;

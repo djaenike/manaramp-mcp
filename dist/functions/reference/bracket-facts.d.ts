@@ -9,7 +9,7 @@ import { CardSummary } from '../query/cards.js';
  * Gathers the raw facts the Commander Bracket System cares about -- which Game Changers/mass land
  * denial/extra-turn cards are present, and which combos are fully assembled -- WITHOUT deciding a
  * bracket label. That decision is the calling model's job, same as wincon_summary/general_strategy
- * -- see manage-deck.ts's bracket_estimate input field. This file only ever answers "what's
+ * -- see tools/shared/deck-analysis.ts (optimize_deck/publish_deck)'s bracket_estimate input field. This file only ever answers "what's
  * actually in this deck," never "what bracket is that." Calls functions/query/combos.ts's
  * queryCombos for the combo-detection step -- not a separate `combos` query of its own.
  *
@@ -17,7 +17,7 @@ import { CardSummary } from '../query/cards.js';
  * recursion_found (2026-09-17, added alongside the new Forge-derived abilities booleans -- see
  * schema/cards.ts in the `manaramp` repo) work the same way as game_changers_found/etc, just backed
  * by Forge's own per-card classification instead of a hardcoded name list. Takes the already-fetched
- * `cards` from manage-deck.ts's own queryCards call (it needs the SAME card data manage-deck.ts
+ * `cards` from tools/shared/deck-analysis.ts (optimize_deck/publish_deck)'s own queryCards call (it needs the SAME card data tools/shared/deck-analysis.ts (optimize_deck/publish_deck)
  * already has for consistency checks/pricing) instead of running a second independent `cards` query
  * -- one canonical query per collection per call, same rule as everywhere else in this package.
  */

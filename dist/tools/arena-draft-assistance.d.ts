@@ -13,7 +13,7 @@ import 'mongodb';
  *
  * Fundamentally local-machine-only (reads a local Player.log file via fs.statSync/readSync in
  * functions/parsing/log_reader.ts) -- will never be part of a future remote MCP transport's tool
- * set (see tools/shared/arena-local-state.ts's header comment), unlike manage-deck.ts.
+ * set (see tools/shared/arena-local-state.ts's header comment), unlike tools/shared/deck-analysis.ts (optimize_deck/publish_deck).
  *
  * NO LIVE SCRYFALL CALLS AT ALL anymore (2026-09-17, second pass) -- grpId resolution used to fall
  * back to a live `arena_id:` search since this tool has no direct Mongo connection; that's gone

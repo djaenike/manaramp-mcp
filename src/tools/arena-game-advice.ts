@@ -9,7 +9,7 @@
  *
  * Fundamentally local-machine-only (reads a local Player.log file, same as arena-draft-assistance.ts)
  * -- will never be part of a future remote MCP transport's tool set (see
- * tools/shared/arena-local-state.ts's header comment), unlike manage-deck.ts.
+ * tools/shared/arena-local-state.ts's header comment), unlike tools/shared/deck-analysis.ts (optimize_deck/publish_deck).
  *
  * Pushes the full match log to manaramp's game_logs collection (2026-09-17) the moment a
  * "matchResult" event appears -- via tools/internal-tools.ts's push_game_log wrapper (->

@@ -1,16 +1,15 @@
 /**
  * local/index.ts
- * The stdio bootstrap -- imports ONLY the 2 Arena tool definitions from ../tools/index.js
- * (localTools, not the full Mongo-backed `tools` set -- see that file's header for why they're
- * disjoint) and registers each with server.tool(...), then connects the stdio transport. This file
- * is the package's "./local" export (see package.json) and is what npm start / the .mcpb manifest
- * actually run.
+ * The stdio bootstrap -- imports `localTools` from ../tools/index.js (the 2 genuinely local-only
+ * Arena tools, get_account_settings, plus every Mongo-backed conversational tool wrapped as a
+ * remote-HTTP proxy -- see that file's header for the full breakdown) and registers each with
+ * server.tool(...), then connects the stdio transport. This file is the package's "./local" export
+ * (see package.json) and is what npm start / the .mcpb manifest actually run.
  *
- * The Arena tools' handlers never read their second (ctx) argument, so the SDK's own per-call
- * `extra` object is passed through in its place here -- harmless, since nothing in this file's tool
- * set ever touches ctx.readDb/writeDb/ownerUserId. Contrast with manaramp's remote `/mcp` route,
- * which builds a real per-request McpContext and must wrap each handler to inject it (see that
- * route's own comments) -- there's no equivalent need here.
+ * None of localTools' handlers read their second (ctx) argument -- the Arena tools and
+ * get_account_settings genuinely don't need it, and the remote-proxied tools ignore it too (their
+ * real ctx gets built server-side, per-request, by manaramp's own /mcp route instead) -- so the
+ * SDK's own per-call `extra` object is passed through in its place here, harmless either way.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

@@ -5,7 +5,7 @@ import 'mongodb';
  * functions/reference/deck-validation.ts (renamed from sub-tools/deck-building/consistency.ts,
  * 2026-09-17, sixth pass) -- PURE: takes already-fetched card data instead of querying Mongo
  * itself. It used to run its OWN `cards.find()` batch query, a THIRD independent implementation of
- * the same query functions/query/cards.ts's queryCards already does -- manage-deck.ts calls
+ * the same query functions/query/cards.ts's queryCards already does -- tools/shared/deck-analysis.ts (optimize_deck/publish_deck) calls
  * queryCards ONCE and passes the result in here, so there's exactly one place `cards` actually
  * gets queried.
  *

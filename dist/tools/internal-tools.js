@@ -1,42 +1,6 @@
 import { z } from "zod";
-import { queryCards } from "../functions/query/cards.js";
 import { pushDraftResult } from "../functions/push/draft-result.js";
 import { pushGameLog } from "../functions/push/game-log.js";
-const queryCardsInputSchema = {
-  names: z.array(z.string()).optional().describe("Exact (case-insensitive) name batch lookup. Takes precedence over every filter below."),
-  oracle_ids: z.array(z.string()).optional().describe("Batch lookup by the `cards` collection's own _id. Same priority as names."),
-  arena_grp_ids: z.array(z.number()).optional().describe("Arena's numeric grpIds -- batch lookup. Same priority as names/oracle_ids."),
-  name_contains: z.string().optional(),
-  color_identity_subset_of: z.array(z.string()).optional(),
-  colors_include: z.array(z.string()).optional(),
-  category: z.string().optional(),
-  cmc_min: z.number().optional(),
-  cmc_max: z.number().optional(),
-  oracle_text_contains: z.string().optional(),
-  legal_in: z.string().optional(),
-  max_price_usd: z.number().optional(),
-  is_mana_rock: z.boolean().optional(),
-  is_card_draw: z.boolean().optional(),
-  is_removal: z.boolean().optional(),
-  is_mass_removal: z.boolean().optional(),
-  is_token_generator: z.boolean().optional(),
-  token_type_contains: z.string().optional(),
-  is_land_ramp: z.boolean().optional(),
-  is_extra_land_drop: z.boolean().optional(),
-  is_tutor: z.boolean().optional(),
-  is_counterspell: z.boolean().optional(),
-  is_recursion: z.boolean().optional(),
-  limit: z.number().optional()
-};
-const queryCardsTool = {
-  name: "query_cards",
-  description: "Internal use only -- resolves card data for the local Arena tools. Not a general-purpose card lookup for conversational use.",
-  inputSchema: queryCardsInputSchema,
-  handler: async (args, ctx) => {
-    const cards = await queryCards(ctx.readDb, args);
-    return { content: [{ type: "text", text: JSON.stringify(cards, null, 2) }] };
-  }
-};
 const pushDraftResultInputSchema = {
   draft_id: z.string().describe("Arena's own draftId for this draft (stable across every call within the same draft)."),
   event_name: z.string().optional().describe("Arena's own event name, e.g. 'QuickDraft_HOB_...'."),
@@ -80,6 +44,5 @@ const pushGameLogTool = {
 };
 export {
   pushDraftResultTool,
-  pushGameLogTool,
-  queryCardsTool
+  pushGameLogTool
 };

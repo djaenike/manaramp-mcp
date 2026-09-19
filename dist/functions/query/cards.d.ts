@@ -59,6 +59,8 @@ interface MongoCardDoc {
     triggered_abilities: Array<{
         effect: string | null;
         trigger_mode: string | null;
+        trigger_type: string | null;
+        optional: boolean;
     }> | null;
     static_abilities: Array<{
         affected: string | null;

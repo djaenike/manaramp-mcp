@@ -5,7 +5,7 @@
  * naming was a leftover from when this repo also hosted the playtest-table feature (moved to the
  * `manaramp` repo 2026-09-12, then the local glue code itself removed entirely once its last real
  * caller was deleted). parsePlaytestDecklist (renamed parseDecklistText) was the one piece of that
- * area still actually used -- by manage-deck.ts, to turn pasted decklist text into structured
+ * area still actually used -- by tools/shared/deck-analysis.ts (optimize_deck/publish_deck), to turn pasted decklist text into structured
  * names. summarizeState (playtest live-game-state formatting) had zero remaining callers and was
  * dropped, not moved.
  */

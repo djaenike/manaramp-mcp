@@ -14,7 +14,7 @@ import type { Db } from "mongodb";
 import { queryCards } from "./cards.js";
 
 // The one canonical shape for a `decks` document -- matches manaramp's
-// src/lib/server/schema/decks.ts. manage-deck.ts (the only writer) imports this same type rather
+// src/lib/server/schema/decks.ts. tools/shared/deck-analysis.ts (optimize_deck/publish_deck) (the only writer) imports this same type rather
 // than declaring its own separate one, so there's exactly one place this shape is defined.
 interface DeckDoc {
   _id: string;
@@ -78,7 +78,7 @@ interface DeckDetail {
   general_strategy: string | null;
 }
 
-/** Get the raw deck doc (for ownership checks etc) -- no card resolution. Used by manage_deck to
+/** Get the raw deck doc (for ownership checks etc) -- no card resolution. Used by optimize_deck/publish_deck to
  *  load an existing deck's oracle_ids before editing. */
 async function getDeckDoc(writeDb: Db, by: { deck_id?: string; slug?: string }): Promise<DeckDoc | null> {
   return writeDb.collection<DeckDoc>("decks").findOne(by.deck_id ? { _id: by.deck_id } : { slug: by.slug });
@@ -96,7 +96,7 @@ async function queryDeckList(writeDb: Db, ownerUserId: string): Promise<DeckSumm
 }
 
 /** One deck, fully resolved: real card names/mana costs/images per oracle_id (via queryCards),
- *  plus a ready-to-paste decklist_text for feeding back into manage_deck. */
+ *  plus a ready-to-paste decklist_text for feeding back into optimize_deck/publish_deck. */
 async function queryDeckDetail(readDb: Db, deck: DeckDoc): Promise<DeckDetail> {
   const commanderOracleIds = deck.commander?.oracle_ids ?? [];
   const allOracleIds = Array.from(new Set([...commanderOracleIds, ...deck.cards]));

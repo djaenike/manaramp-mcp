@@ -3,8 +3,8 @@ import { DeckDoc } from '../query/decks.js';
 
 /**
  * functions/push/deck.ts -- the ONE place that writes to manaramp's `decks` Mongo collection.
- * Extracted out of tools/manage-deck.ts's own handler (2026-09-17, sixth pass, tools/functions
- * split) -- manage_deck (the only caller) builds the full set of already-resolved fields to
+ * Extracted out of tools/tools/shared/deck-analysis.ts (optimize_deck/publish_deck)'s own handler (2026-09-17, sixth pass, tools/functions
+ * split) -- optimize_deck/publish_deck (the only caller) builds the full set of already-resolved fields to
  * persist (via functions/query/cards.ts + functions/reference/*), and this function just does the
  * insert-or-update-in-place + slug assignment. Reads (getDeckDoc/queryDeckList/queryDeckDetail)
  * live in functions/query/decks.ts -- this is the write counterpart, split out the same way
@@ -19,7 +19,7 @@ interface PushDeckResult {
 }
 /**
  * Insert a brand-new deck, or update an existing one (by _id) in place. `existingDeck` must
- * already be ownership-checked by the caller (see manage-deck.ts) -- this function persists
+ * already be ownership-checked by the caller (see tools/shared/deck-analysis.ts (optimize_deck/publish_deck)) -- this function persists
  * unconditionally. On update, `existingDeck.slug` is always preserved (never re-derived from
  * `fields.name`) so an existing manaramp.com/decks/<slug> link never breaks.
  */

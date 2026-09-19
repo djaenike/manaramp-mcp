@@ -50,7 +50,7 @@ interface MongoCardDoc {
   } | null;
   keywords: string[] | null;
   activated_abilities: Array<{ effect: string | null; cost_raw: string | null; requires_tap: boolean; requires_sacrifice: boolean; requires_mana_cost: boolean }> | null;
-  triggered_abilities: Array<{ effect: string | null; trigger_mode: string | null }> | null;
+  triggered_abilities: Array<{ effect: string | null; trigger_mode: string | null; trigger_type: string | null; optional: boolean }> | null;
   static_abilities: Array<{ affected: string | null }> | null;
   scryfall_printings: Array<{ scryfall_id: string; set_code: string; collector_number: string; image_url: string | null }>;
   market_data: {

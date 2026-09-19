@@ -39,8 +39,10 @@ function validateDeck(cards, commander_names, deck_entries) {
     });
   }
   const commanderColorSet = /* @__PURE__ */ new Set();
+  let commanderResolved = false;
   for (const name of commander_names) {
     const card = cardByName.get(name.toLowerCase());
+    if (card) commanderResolved = true;
     for (const c of card?.color_identity ?? []) commanderColorSet.add(c);
   }
   const totalCards = commander_names.length + deck_entries.reduce((sum, e) => sum + e.qty, 0);
@@ -58,10 +60,12 @@ function validateDeck(cards, commander_names, deck_entries) {
     if (entry.qty > 1 && !isBasicLand(card)) {
       duplicateViolations.push({ name: entry.name, qty: entry.qty });
     }
-    const cardColors = card.color_identity ?? [];
-    const offendingColors = cardColors.filter((c) => !commanderColorSet.has(c));
-    if (offendingColors.length) {
-      colorIdentityViolations.push({ name: entry.name, card_color_identity: cardColors, offending_colors: offendingColors });
+    if (commanderResolved) {
+      const cardColors = card.color_identity ?? [];
+      const offendingColors = cardColors.filter((c) => !commanderColorSet.has(c));
+      if (offendingColors.length) {
+        colorIdentityViolations.push({ name: entry.name, card_color_identity: cardColors, offending_colors: offendingColors });
+      }
     }
     if (card.legalities?.commander !== "legal") {
       notCommanderLegal.push({ name: entry.name, status: card.legalities?.commander ?? "unknown" });
@@ -94,6 +98,9 @@ function validateDeck(cards, commander_names, deck_entries) {
   }
   if (colorIdentityViolations.length) {
     issues.push(`Outside commander's color identity: ${colorIdentityViolations.map((v) => v.name).join(", ")}`);
+  }
+  if (!commanderResolved && commander_names.length) {
+    issues.push(`Commander(s) not found in manaramp's card database (${commander_names.join(", ")}) -- cannot verify color identity for any card until this is fixed.`);
   }
   if (notCommanderLegal.length) {
     issues.push(`Not legal in Commander: ${notCommanderLegal.map((v) => `${v.name} (${v.status})`).join(", ")}`);

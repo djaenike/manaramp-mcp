@@ -72,13 +72,25 @@ async function fetchPlayerLogPathFromManaramp() {
     return null;
   }
 }
+function stripWrappingQuotes(path) {
+  const trimmed = path.trim();
+  if (trimmed.length >= 2) {
+    const first = trimmed[0];
+    const last = trimmed[trimmed.length - 1];
+    if (first === '"' && last === '"' || first === "'" && last === "'") {
+      return trimmed.slice(1, -1);
+    }
+  }
+  return trimmed;
+}
 async function resolvePlayerLogPath(providedPath) {
   const settingsPath = getSettingsPath();
   if (providedPath) {
-    if (providedPath !== loadSettings(settingsPath).player_log_path) {
-      saveSettings(settingsPath, { player_log_path: providedPath });
+    const sanitized = stripWrappingQuotes(providedPath);
+    if (sanitized !== loadSettings(settingsPath).player_log_path) {
+      saveSettings(settingsPath, { player_log_path: sanitized });
     }
-    return providedPath;
+    return sanitized;
   }
   const remembered = loadSettings(settingsPath).player_log_path;
   if (remembered) return remembered;

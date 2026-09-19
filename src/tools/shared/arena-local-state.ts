@@ -173,6 +173,25 @@ async function fetchPlayerLogPathFromManaramp(): Promise<string | null> {
   }
 }
 
+// Windows' own "Copy as path" wraps the result in double quotes -- harmless to look at, but
+// fs.statSync/fs.openSync (log_reader.ts) treat the quote characters as part of the literal path
+// and fail outright, since quoting is a shell/clipboard convention, not a filesystem one. A user is
+// just as likely to paste that straight into a Claude conversation (providedPath below) as to type
+// it into the website form (manaramp/src/lib/server/mcp-keys/index.ts's setPlayerLogPath does the
+// same stripping server-side) -- sanitize both entry points independently rather than assuming one
+// or the other is authoritative.
+function stripWrappingQuotes(path: string): string {
+  const trimmed = path.trim();
+  if (trimmed.length >= 2) {
+    const first = trimmed[0];
+    const last = trimmed[trimmed.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return trimmed.slice(1, -1);
+    }
+  }
+  return trimmed;
+}
+
 /**
  * Resolves player_log_path for a call, in order: (1) whatever was explicitly passed wins, and gets
  * remembered locally for next time; (2) whatever was last remembered on THIS machine; (3) whatever
@@ -184,10 +203,11 @@ async function fetchPlayerLogPathFromManaramp(): Promise<string | null> {
 async function resolvePlayerLogPath(providedPath?: string | null): Promise<string | null> {
   const settingsPath = getSettingsPath();
   if (providedPath) {
-    if (providedPath !== loadSettings(settingsPath).player_log_path) {
-      saveSettings(settingsPath, { player_log_path: providedPath });
+    const sanitized = stripWrappingQuotes(providedPath);
+    if (sanitized !== loadSettings(settingsPath).player_log_path) {
+      saveSettings(settingsPath, { player_log_path: sanitized });
     }
-    return providedPath;
+    return sanitized;
   }
 
   const remembered = loadSettings(settingsPath).player_log_path;

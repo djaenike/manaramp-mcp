@@ -84,7 +84,7 @@ interface DeckDetail {
     wincon_summary: string | null;
     general_strategy: string | null;
 }
-/** Get the raw deck doc (for ownership checks etc) -- no card resolution. Used by manage_deck to
+/** Get the raw deck doc (for ownership checks etc) -- no card resolution. Used by optimize_deck/publish_deck to
  *  load an existing deck's oracle_ids before editing. */
 declare function getDeckDoc(writeDb: Db, by: {
     deck_id?: string;
@@ -94,7 +94,7 @@ declare function getDeckDoc(writeDb: Db, by: {
  *  for a whole list; call queryDeckDetail for one specific deck instead). */
 declare function queryDeckList(writeDb: Db, ownerUserId: string): Promise<DeckSummary[]>;
 /** One deck, fully resolved: real card names/mana costs/images per oracle_id (via queryCards),
- *  plus a ready-to-paste decklist_text for feeding back into manage_deck. */
+ *  plus a ready-to-paste decklist_text for feeding back into optimize_deck/publish_deck. */
 declare function queryDeckDetail(readDb: Db, deck: DeckDoc): Promise<DeckDetail>;
 
 export { type DeckCard, type DeckDetail, type DeckDoc, type DeckSummary, getDeckDoc, queryDeckDetail, queryDeckList };

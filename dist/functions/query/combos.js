@@ -12,7 +12,10 @@ async function queryCombos(db, card_names, limit) {
   const cardDocs = await queryCards(db, { names: allPieceNames });
   const cmcByName = new Map(cardDocs.map((c) => [norm(c.name), c.cmc ?? 0]));
   const results = assembled.map((v) => {
+    const unresolvedPieceNames = v.pieces_names.filter((name) => !cmcByName.has(norm(name)));
     const totalCmc = v.pieces_names.reduce((sum, name) => sum + (cmcByName.get(norm(name)) ?? 0), 0);
+    const manaValueNeeded = v.mana_value_needed ?? null;
+    const speed = manaValueNeeded !== null ? manaValueNeeded <= FAST_COMBO_MAX_CMC ? "fast" : "slow" : v.speed === "fast" || v.speed === "slow" ? v.speed : totalCmc <= FAST_COMBO_MAX_CMC ? "fast" : "slow";
     return {
       id: v._id,
       pieces: v.pieces_names,
@@ -20,7 +23,10 @@ async function queryCombos(db, card_names, limit) {
       steps: v.steps,
       permalink: v.spellbook_url,
       total_cmc: totalCmc,
-      speed: totalCmc <= FAST_COMBO_MAX_CMC ? "fast" : "slow"
+      unresolved_piece_names: unresolvedPieceNames,
+      mana_value_needed: manaValueNeeded,
+      mana_needed: v.mana_needed ?? null,
+      speed
     };
   });
   return limit ? results.slice(0, limit) : results;

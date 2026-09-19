@@ -1,64 +1,24 @@
 /**
- * tools/internal-tools.ts -- query_cards / push_draft_result / push_game_log
+ * tools/internal-tools.ts -- push_draft_result / push_game_log
  *
  * NOT primary/conversational tools -- these exist purely so the two local-stdio Arena tools
- * (arena_draft_assistance / arena_game_advice), which have no direct Mongo connection of their own
- * (see tools/types.ts's McpContext header), can reach manaramp's database over HTTP via
- * tools/shared/remote-client.ts's callRemoteTool(name, args) -- see that file's header and
- * tools/shared/arena-local-state.ts's resolveGrpIdsViaManaramp. manage_deck is the only real
- * conversational entry point to card/deck data now; there is no ad-hoc "look up a card" or "log a
- * match" tool for an LLM client to call on its own.
+ * (arena_draft_assistance / arena_draft_game_advice), which have no direct Mongo connection of
+ * their own (see tools/types.ts's McpContext header), can reach manaramp's database over HTTP via
+ * tools/shared/remote-client.ts's callRemoteTool(name, args). Unlike query_cards (promoted to a
+ * real conversational tool 2026-09-18, see tools/search-cards.ts), these two stay internal-only on
+ * purpose -- there's no legitimate conversational reason for a calling model to push a draft/game
+ * log directly; that's exclusively a side effect of running the local Arena tools themselves.
  *
  * Each export below is a bare zod-schema + handler shim around the real logic, which lives in
- * functions/query/cards.ts and functions/push/*.ts -- no query/persistence logic of its own. Still
- * registered in the remote `tools` array (so manaramp's own /mcp route exposes them, since that's
- * the only transport the Arena tools' HTTP calls can reach), but never in localTools and never
- * proxied -- see tools/index.ts.
+ * functions/push/*.ts -- no persistence logic of its own. Still registered in the remote `tools`
+ * array (so manaramp's own /mcp route exposes them, since that's the only transport the Arena
+ * tools' HTTP calls can reach), but never in localTools and never proxied -- see tools/index.ts.
  */
 
 import { z } from "zod";
-import { queryCards } from "../functions/query/cards.js";
 import { pushDraftResult } from "../functions/push/draft-result.js";
 import { pushGameLog } from "../functions/push/game-log.js";
 import type { ToolDefinition } from "./types.js";
-
-// --- query_cards -----------------------------------------------------------------------------
-const queryCardsInputSchema = {
-  names: z.array(z.string()).optional().describe("Exact (case-insensitive) name batch lookup. Takes precedence over every filter below."),
-  oracle_ids: z.array(z.string()).optional().describe("Batch lookup by the `cards` collection's own _id. Same priority as names."),
-  arena_grp_ids: z.array(z.number()).optional().describe("Arena's numeric grpIds -- batch lookup. Same priority as names/oracle_ids."),
-  name_contains: z.string().optional(),
-  color_identity_subset_of: z.array(z.string()).optional(),
-  colors_include: z.array(z.string()).optional(),
-  category: z.string().optional(),
-  cmc_min: z.number().optional(),
-  cmc_max: z.number().optional(),
-  oracle_text_contains: z.string().optional(),
-  legal_in: z.string().optional(),
-  max_price_usd: z.number().optional(),
-  is_mana_rock: z.boolean().optional(),
-  is_card_draw: z.boolean().optional(),
-  is_removal: z.boolean().optional(),
-  is_mass_removal: z.boolean().optional(),
-  is_token_generator: z.boolean().optional(),
-  token_type_contains: z.string().optional(),
-  is_land_ramp: z.boolean().optional(),
-  is_extra_land_drop: z.boolean().optional(),
-  is_tutor: z.boolean().optional(),
-  is_counterspell: z.boolean().optional(),
-  is_recursion: z.boolean().optional(),
-  limit: z.number().optional(),
-};
-
-const queryCardsTool: ToolDefinition<typeof queryCardsInputSchema> = {
-  name: "query_cards",
-  description: "Internal use only -- resolves card data for the local Arena tools. Not a general-purpose card lookup for conversational use.",
-  inputSchema: queryCardsInputSchema,
-  handler: async (args, ctx) => {
-    const cards = await queryCards(ctx.readDb, args);
-    return { content: [{ type: "text" as const, text: JSON.stringify(cards, null, 2) }] };
-  },
-};
 
 // --- push_draft_result -------------------------------------------------------------------------
 const pushDraftResultInputSchema = {
@@ -104,4 +64,4 @@ const pushGameLogTool: ToolDefinition<typeof pushGameLogInputSchema> = {
   },
 };
 
-export { queryCardsTool, pushDraftResultTool, pushGameLogTool };
+export { pushDraftResultTool, pushGameLogTool };
