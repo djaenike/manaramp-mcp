@@ -19,6 +19,7 @@ const mongoBackedTools = [
 ];
 const tools = [
   ...mongoBackedTools,
+  getAccountSettingsTool,
   pushDraftResultTool,
   pushGameLogTool
 ];

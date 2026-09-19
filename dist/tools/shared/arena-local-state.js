@@ -96,8 +96,9 @@ async function resolvePlayerLogPath(providedPath) {
   if (remembered) return remembered;
   const fromServer = await fetchPlayerLogPathFromManaramp();
   if (fromServer) {
-    saveSettings(settingsPath, { player_log_path: fromServer });
-    return fromServer;
+    const sanitized = stripWrappingQuotes(fromServer);
+    saveSettings(settingsPath, { player_log_path: sanitized });
+    return sanitized;
   }
   return null;
 }

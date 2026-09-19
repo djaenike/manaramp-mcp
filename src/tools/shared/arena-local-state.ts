@@ -213,10 +213,16 @@ async function resolvePlayerLogPath(providedPath?: string | null): Promise<strin
   const remembered = loadSettings(settingsPath).player_log_path;
   if (remembered) return remembered;
 
+  // Re-stripped here too (2026-09-19), not just trusting the server already did it -- same
+  // independent-entry-point reasoning as the providedPath branch above (see stripWrappingQuotes's
+  // own header): belt-and-suspenders against a value that reached mcp_keys before manaramp's own
+  // read/write-side stripping existed, so this machine's local cache never gets seeded with quotes
+  // even if the server response somehow still has them.
   const fromServer = await fetchPlayerLogPathFromManaramp();
   if (fromServer) {
-    saveSettings(settingsPath, { player_log_path: fromServer });
-    return fromServer;
+    const sanitized = stripWrappingQuotes(fromServer);
+    saveSettings(settingsPath, { player_log_path: sanitized });
+    return sanitized;
   }
   return null;
 }
