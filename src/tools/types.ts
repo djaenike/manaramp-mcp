@@ -47,6 +47,18 @@ interface McpContext {
    *  authenticated (API keys are mandatory at account creation) -- there is no anonymous/unowned
    *  path anymore, unlike the pre-2026-09-17 local-stdio-only design. */
   ownerUserId: string;
+  /** Lazily resolves this account's saved player_log_path (2026-09-19, for get_account_settings
+   *  over remote). mcp_keys is account/security-adjacent data under the full MONGODB_URI -- the
+   *  same trust tier as Better Auth's own collections, deliberately NOT exposed via readDb/writeDb
+   *  to every tool handler (see schema/mcp_keys.ts's header in the `manaramp` repo). manaramp's
+   *  /mcp route resolves ownerUserId via that same full-access connection during auth already, so
+   *  it hands this down as a narrow, single-purpose getter instead of widening readDb/writeDb's
+   *  scope -- keeps the boundary at "the route can touch mcp_keys," not "every tool handler can."
+   *  A getter (not the value itself) so a Worker request that never calls get_account_settings
+   *  never pays for the extra mcp_keys round trip. Optional: local/index.ts's stdio bootstrap
+   *  passes the SDK's own `extra` object in ctx's place (see that file's header) and has no such
+   *  field -- get_account_settings falls back to its own local resolution when it's absent. */
+  getPlayerLogPath?: () => Promise<string | null>;
 }
 
 interface ToolDefinition<Shape extends ZodRawShape = ZodRawShape> {

@@ -21,26 +21,35 @@
  *   `commander_synergies` had a dedicated lookup tool before this, despite both collections already
  *   existing (combo data only ever reached a model as a side effect buried in manage_deck's
  *   response; synergy had no tool at all).
- * - get_account_settings is brand new, LOCAL only -- lets a calling model check what's configured
+ * - get_account_settings started LOCAL-only, lets a calling model check what's configured
  *   (currently just player_log_path) instead of that resolution being an invisible side effect.
+ *   UPDATED 2026-09-19: also registered on the remote `tools` array now -- see that tool's own
+ *   header for how it resolves player_log_path differently per transport (ctx.getPlayerLogPath()
+ *   remotely vs. its original local resolution chain locally). It still doesn't let Claude actually
+ *   READ Player.log remotely -- a Worker has no filesystem, so only the path string is available
+ *   over remote, not its contents; reading the file itself still requires the 2 Arena tools below,
+ *   which stay local-only.
  *
  * push_draft_result/push_game_log stay internal-only (tools/internal-tools.ts) -- there's no
  * legitimate conversational reason to call those directly, unlike query_cards.
  *
  * `tools` is what the remote endpoint registers -- running in-process with a real Db (see
- * McpContext in tools/types.ts): every tool above that's genuinely usable/needed remotely, PLUS the
- * 2 internal-only wrappers from tools/internal-tools.ts (`push_draft_result`, `push_game_log`) --
- * those exist only so the local Arena tools' remote HTTP calls have something to call.
+ * McpContext in tools/types.ts): every tool above that's genuinely usable/needed remotely, PLUS
+ * get_account_settings, PLUS the 2 internal-only wrappers from tools/internal-tools.ts
+ * (`push_draft_result`, `push_game_log`) -- those exist only so the local Arena tools' remote HTTP
+ * calls have something to call.
  *
  * `localTools` is what local/index.ts's stdio bootstrap registers instead: the 2 genuinely local
  * Arena tools (read a local Player.log file, can never run remotely -- a Worker has no filesystem)
- * PLUS get_account_settings (also genuinely local-only) PLUS a remote-proxied version of every
- * Mongo-backed conversational tool (via tools/shared/remote-proxy.ts) -- same name/description/
- * schema, but the handler calls manaramp.com/mcp over HTTP instead of touching a Db directly, using
- * the same MANARAMP_API_KEY the Arena tools' own remote calls already need (manifest.json's
- * user_config). This makes the .mcpb a complete, self-sufficient MCP server on its own. The 2
- * internal push tools are never proxied for local use -- they're side effects the Arena tools call
- * themselves via remote-client.ts directly, not something the calling model invokes.
+ * PLUS get_account_settings (registered directly here too, same object as `tools`' copy -- its
+ * handler branches on ctx.getPlayerLogPath's presence to pick the right resolution per transport)
+ * PLUS a remote-proxied version of every Mongo-backed conversational tool (via
+ * tools/shared/remote-proxy.ts) -- same name/description/schema, but the handler calls
+ * manaramp.com/mcp over HTTP instead of touching a Db directly, using the same MANARAMP_API_KEY the
+ * Arena tools' own remote calls already need (manifest.json's user_config). This makes the .mcpb a
+ * complete, self-sufficient MCP server on its own. The 2 internal push tools are never proxied for
+ * local use -- they're side effects the Arena tools call themselves via remote-client.ts directly,
+ * not something the calling model invokes.
  */
 
 import { optimizeDeckTool } from "./optimize-deck.js";
@@ -67,6 +76,7 @@ const mongoBackedTools: ToolDefinition<any>[] = [
 
 const tools: ToolDefinition<any>[] = [
   ...mongoBackedTools,
+  getAccountSettingsTool,
   pushDraftResultTool,
   pushGameLogTool,
 ];
