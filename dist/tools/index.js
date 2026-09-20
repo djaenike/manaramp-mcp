@@ -27,7 +27,9 @@ const localTools = [
   arenaDraftAssistanceTool,
   arenaDraftGameAdviceTool,
   getAccountSettingsTool,
-  ...mongoBackedTools.map(toRemoteProxy)
+  ...mongoBackedTools.map(toRemoteProxy),
+  toRemoteProxy(pushDraftResultTool),
+  toRemoteProxy(pushGameLogTool)
 ];
 export {
   arenaDraftAssistanceTool,

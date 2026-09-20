@@ -1,18 +1,26 @@
 /**
  * tools/internal-tools.ts -- push_draft_result / push_game_log
  *
- * NOT primary/conversational tools -- these exist purely so the two local-stdio Arena tools
- * (arena_draft_assistance / arena_draft_game_advice), which have no direct Mongo connection of
- * their own (see tools/types.ts's McpContext header), can reach manaramp's database over HTTP via
- * tools/shared/remote-client.ts's callRemoteTool(name, args). Unlike query_cards (promoted to a
- * real conversational tool 2026-09-18, see tools/search-cards.ts), these two stay internal-only on
- * purpose -- there's no legitimate conversational reason for a calling model to push a draft/game
- * log directly; that's exclusively a side effect of running the local Arena tools themselves.
+ * Originally exist so the two local-stdio Arena tools (arena_draft_assistance /
+ * arena_draft_game_advice), which have no direct Mongo connection of their own (see
+ * tools/types.ts's McpContext header), can reach manaramp's database over HTTP via
+ * tools/shared/remote-client.ts's callRemoteTool(name, args) as a side effect of a live draft/game.
+ *
+ * UN-internal'd 2026-09-19 (same fix query_cards got 2026-09-18, see tools/search-cards.ts's own
+ * header): these used to be marked "Internal use only -- Not for conversational use," on the theory
+ * that a calling model would never have a legitimate reason to call them directly. Confirmed live
+ * that framing actively backfires exactly the same way it did for query_cards -- a real user
+ * couldn't get a PRIOR draft's result pushed at all (the picks/packs_seen data was still sitting in
+ * that conversation's own context, resolvable via query_cards, but the model wouldn't call a tool
+ * described as internal-only even when it was exactly the right one). Both take plain data
+ * (draft_id/picks/packs_seen, or deck_id/events) as arguments, not a live log-reading session --
+ * there's nothing about either that actually REQUIRES the local Arena tools to be the caller.
  *
  * Each export below is a bare zod-schema + handler shim around the real logic, which lives in
- * functions/push/*.ts -- no persistence logic of its own. Still registered in the remote `tools`
- * array (so manaramp's own /mcp route exposes them, since that's the only transport the Arena
- * tools' HTTP calls can reach), but never in localTools and never proxied -- see tools/index.ts.
+ * functions/push/*.ts -- no persistence logic of its own. Registered in the remote `tools` array
+ * (manaramp's own /mcp route) AND in localTools now (via toRemoteProxy, same as every other
+ * Mongo-backed tool -- see tools/index.ts), so a calling model can push a draft/game result
+ * directly, not just have it happen invisibly as an Arena-tool side effect.
  */
 
 import { z } from "zod";
@@ -35,7 +43,14 @@ const pushDraftResultInputSchema = {
 
 const pushDraftResultTool: ToolDefinition<typeof pushDraftResultInputSchema> = {
   name: "push_draft_result",
-  description: "Internal use only -- upserts a draft's picks/pack history for the local arena_draft_assistance tool. Not for conversational use.",
+  description:
+    "Saves a draft's picks/pack history to the user's manaramp account -- upserts by draft_id, so " +
+    "calling it again for the same draft just refreshes it, never duplicates. arena_draft_assistance " +
+    "already calls this automatically during a LIVE draft; use this directly when a user wants a " +
+    "past draft recorded and it wasn't pushed live (e.g. Player.log has since been overwritten by a " +
+    "later Arena session, or the extension wasn't connected at the time) -- reconstruct picks/" +
+    "packs_seen from whatever's available (this conversation's history, grpIds resolved via " +
+    "query_cards from card names the user gives you, etc.) and call this once you have them.",
   inputSchema: pushDraftResultInputSchema,
   handler: async ({ draft_id, event_name, draft_format, picks, packs_seen }, ctx) => {
     const result = await pushDraftResult(ctx.writeDb, ctx.ownerUserId, {
@@ -56,7 +71,12 @@ const pushGameLogInputSchema = {
 
 const pushGameLogTool: ToolDefinition<typeof pushGameLogInputSchema> = {
   name: "push_game_log",
-  description: "Internal use only -- pushes a finished match/draft timeline for the local arena_game_advice tool. Not for conversational use.",
+  description:
+    "Saves a finished match's event timeline to the user's manaramp account. " +
+    "arena_draft_game_advice already calls this automatically during a LIVE game; use this directly " +
+    "when a user wants a past match recorded and it wasn't pushed live -- events is whatever ordered " +
+    "timeline you can reconstruct (matching buildMatchTimeline's own event shape) from what's " +
+    "actually available, e.g. this conversation's history.",
   inputSchema: pushGameLogInputSchema,
   handler: async ({ deck_id, format, events, result }, ctx) => {
     const pushed = await pushGameLog(ctx.writeDb, ctx.ownerUserId, { deck_id, format, events, result });

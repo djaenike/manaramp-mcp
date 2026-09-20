@@ -30,26 +30,25 @@
  *   over remote, not its contents; reading the file itself still requires the 2 Arena tools below,
  *   which stay local-only.
  *
- * push_draft_result/push_game_log stay internal-only (tools/internal-tools.ts) -- there's no
- * legitimate conversational reason to call those directly, unlike query_cards.
+ * push_draft_result/push_game_log UN-internal'd 2026-09-19 (tools/internal-tools.ts) -- same
+ * query_cards-shaped fix: "internal use only" framing was found live to make a calling model refuse
+ * to call these even when a user explicitly wanted a past draft/match pushed and had everything
+ * needed to do it. Real conversational tools now, registered the same way as every other
+ * Mongo-backed tool below.
  *
  * `tools` is what the remote endpoint registers -- running in-process with a real Db (see
  * McpContext in tools/types.ts): every tool above that's genuinely usable/needed remotely, PLUS
- * get_account_settings, PLUS the 2 internal-only wrappers from tools/internal-tools.ts
- * (`push_draft_result`, `push_game_log`) -- those exist only so the local Arena tools' remote HTTP
- * calls have something to call.
+ * get_account_settings, PLUS push_draft_result/push_game_log.
  *
  * `localTools` is what local/index.ts's stdio bootstrap registers instead: the 2 genuinely local
  * Arena tools (read a local Player.log file, can never run remotely -- a Worker has no filesystem)
  * PLUS get_account_settings (registered directly here too, same object as `tools`' copy -- its
  * handler branches on ctx.getPlayerLogPath's presence to pick the right resolution per transport)
- * PLUS a remote-proxied version of every Mongo-backed conversational tool (via
- * tools/shared/remote-proxy.ts) -- same name/description/schema, but the handler calls
- * manaramp.com/mcp over HTTP instead of touching a Db directly, using the same MANARAMP_API_KEY the
- * Arena tools' own remote calls already need (manifest.json's user_config). This makes the .mcpb a
- * complete, self-sufficient MCP server on its own. The 2 internal push tools are never proxied for
- * local use -- they're side effects the Arena tools call themselves via remote-client.ts directly,
- * not something the calling model invokes.
+ * PLUS a remote-proxied version of every Mongo-backed conversational tool, INCLUDING the two push
+ * tools now (via tools/shared/remote-proxy.ts) -- same name/description/schema, but the handler
+ * calls manaramp.com/mcp over HTTP instead of touching a Db directly, using the same
+ * MANARAMP_API_KEY the Arena tools' own remote calls already need (manifest.json's user_config).
+ * This makes the .mcpb a complete, self-sufficient MCP server on its own.
  */
 
 import { optimizeDeckTool } from "./optimize-deck.js";
@@ -86,6 +85,8 @@ const localTools: ToolDefinition<any>[] = [
   arenaDraftGameAdviceTool,
   getAccountSettingsTool,
   ...mongoBackedTools.map(toRemoteProxy),
+  toRemoteProxy(pushDraftResultTool),
+  toRemoteProxy(pushGameLogTool),
 ];
 
 export {

@@ -14,7 +14,7 @@ const pushDraftResultInputSchema = {
 };
 const pushDraftResultTool = {
   name: "push_draft_result",
-  description: "Internal use only -- upserts a draft's picks/pack history for the local arena_draft_assistance tool. Not for conversational use.",
+  description: "Saves a draft's picks/pack history to the user's manaramp account -- upserts by draft_id, so calling it again for the same draft just refreshes it, never duplicates. arena_draft_assistance already calls this automatically during a LIVE draft; use this directly when a user wants a past draft recorded and it wasn't pushed live (e.g. Player.log has since been overwritten by a later Arena session, or the extension wasn't connected at the time) -- reconstruct picks/packs_seen from whatever's available (this conversation's history, grpIds resolved via query_cards from card names the user gives you, etc.) and call this once you have them.",
   inputSchema: pushDraftResultInputSchema,
   handler: async ({ draft_id, event_name, draft_format, picks, packs_seen }, ctx) => {
     const result = await pushDraftResult(ctx.writeDb, ctx.ownerUserId, {
@@ -35,7 +35,7 @@ const pushGameLogInputSchema = {
 };
 const pushGameLogTool = {
   name: "push_game_log",
-  description: "Internal use only -- pushes a finished match/draft timeline for the local arena_game_advice tool. Not for conversational use.",
+  description: "Saves a finished match's event timeline to the user's manaramp account. arena_draft_game_advice already calls this automatically during a LIVE game; use this directly when a user wants a past match recorded and it wasn't pushed live -- events is whatever ordered timeline you can reconstruct (matching buildMatchTimeline's own event shape) from what's actually available, e.g. this conversation's history.",
   inputSchema: pushGameLogInputSchema,
   handler: async ({ deck_id, format, events, result }, ctx) => {
     const pushed = await pushGameLog(ctx.writeDb, ctx.ownerUserId, { deck_id, format, events, result });
