@@ -44,9 +44,12 @@ const optimizeDeckTool: ToolDefinition<typeof inputSchema> = {
     "get its current decklist_text as your starting point, then iterate here before publish_deck.",
   inputSchema,
   handler: async ({ decklist_text, bracket_estimate, bracket_level_requested }, ctx) => {
+    // Falls back to 'cardkingdom' for a legacy account with no preference saved yet, AND for a
+    // local-stdio call where ctx has no such getter at all -- see tools/types.ts's McpContext.
+    const priceSource = (await ctx.getPriceSourcePreference?.()) ?? "cardkingdom";
     let analysis;
     try {
-      analysis = await analyzeDecklist(ctx.readDb, decklist_text);
+      analysis = await analyzeDecklist(ctx.readDb, decklist_text, priceSource);
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: e.message }] };
     }
@@ -73,6 +76,7 @@ const optimizeDeckTool: ToolDefinition<typeof inputSchema> = {
             ? extractBracketNumber(bracket_level_requested) === extractBracketNumber(bracket_estimate)
             : null,
           price_usd: priceTotal,
+          price_source: priceSource,
           cards_not_priced: cardsNotPriced.length ? cardsNotPriced : undefined,
           mana_curve: consistency.mana_curve,
           curve_out_probability: consistency.curve_out_probability,

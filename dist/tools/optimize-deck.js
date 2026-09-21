@@ -10,9 +10,10 @@ const optimizeDeckTool = {
   description: "Analyze a decklist -- consistency (card count, singleton, color identity, Commander legality), mana curve, curve-out probability, price, and Game Changer/mass land denial/extra turn/combo/tutor/ramp/token/counterspell/recursion facts -- WITHOUT persisting or publishing anything. Call this as many times as you want while assembling or tweaking a decklist; nothing is saved to the user's account until you separately call publish_deck with the final list. game_changers_found/mass_land_denial_found/extra_turns_found/combos_found are raw facts, NOT a bracket verdict -- judge the actual Commander Bracket (1-5) yourself from those facts plus the official Bracket System's own criteria. tutors_found/land_ramp_found/extra_land_drops_found/token_generators_found/counterspells_found/recursion_found are the same kind of raw per-card fact, Forge-derived, for judging whether the deck has real interaction/card advantage/ramp -- not just what a wincon summary claims. combos_found's total_cmc/unresolved_piece_names: when unresolved_piece_names is non-empty, total_cmc is a floor (some pieces aren't in manaramp's card database yet), not a confirmed total. Editing an EXISTING deck? Call read_deck first to get its current decklist_text as your starting point, then iterate here before publish_deck.",
   inputSchema,
   handler: async ({ decklist_text, bracket_estimate, bracket_level_requested }, ctx) => {
+    const priceSource = await ctx.getPriceSourcePreference?.() ?? "cardkingdom";
     let analysis;
     try {
-      analysis = await analyzeDecklist(ctx.readDb, decklist_text);
+      analysis = await analyzeDecklist(ctx.readDb, decklist_text, priceSource);
     } catch (e) {
       return { content: [{ type: "text", text: e.message }] };
     }
@@ -36,6 +37,7 @@ const optimizeDeckTool = {
           bracket_estimate: bracket_estimate ?? null,
           bracket_level_matches_request: bracket_estimate && bracket_level_requested ? extractBracketNumber(bracket_level_requested) === extractBracketNumber(bracket_estimate) : null,
           price_usd: priceTotal,
+          price_source: priceSource,
           cards_not_priced: cardsNotPriced.length ? cardsNotPriced : void 0,
           mana_curve: consistency.mana_curve,
           curve_out_probability: consistency.curve_out_probability,

@@ -37,6 +37,11 @@ interface McpToolResponse {
         text: string;
     }>;
 }
+/** 'cardkingdom' | 'manapool' -- which market a price normalizes to. Mirrors manaramp's own
+ *  PriceSource type (src/lib/server/mcp-keys/index.ts) exactly; kept as a separate local literal
+ *  union rather than importing it, same repo-boundary call as everything else in this file (manaramp
+ *  doesn't depend on manaramp-mcp, and this package has no dependency back on manaramp either). */
+type PriceSource = "cardkingdom" | "manapool";
 interface McpContext {
     /** MONGODB_READONLY_URI-backed -- cards/sets/commander_synergies/combos. Read-only at the
      *  database level regardless of what a handler tries to do with it. */
@@ -61,6 +66,17 @@ interface McpContext {
      *  passes the SDK's own `extra` object in ctx's place (see that file's header) and has no such
      *  field -- get_account_settings falls back to its own local resolution when it's absent. */
     getPlayerLogPath?: () => Promise<string | null>;
+    /** Lazily resolves this account's saved price-normalization preference (2026-09-21, for
+     *  optimize_deck/publish_deck's deck-total pricing -- see functions/query/cards.ts's toSummary and
+     *  tools/shared/deck-analysis.ts's analyzeDecklist). Same trust tier / same reasoning as
+     *  getPlayerLogPath directly above -- read that comment for why this is a getter under mcp_keys
+     *  rather than something exposed via readDb/writeDb. Optional for the identical reason too: absent
+     *  under local/index.ts's stdio bootstrap, AND absent for any account that predates this
+     *  preference existing (price_source: null in Mongo) -- every caller treats a missing/undefined
+     *  result the same way, falling back to 'cardkingdom' (this app's price displays already preferred
+     *  Card Kingdom before this preference existed, so that's not a behavior change for anyone who
+     *  hasn't touched the /settings toggle). */
+    getPriceSourcePreference?: () => Promise<PriceSource>;
 }
 interface ToolDefinition<Shape extends ZodRawShape = ZodRawShape> {
     name: string;
@@ -69,4 +85,4 @@ interface ToolDefinition<Shape extends ZodRawShape = ZodRawShape> {
     handler: (args: z.infer<z.ZodObject<Shape>>, ctx: McpContext) => Promise<McpToolResponse>;
 }
 
-export type { McpContext, McpToolResponse, ToolDefinition };
+export type { McpContext, McpToolResponse, PriceSource, ToolDefinition };

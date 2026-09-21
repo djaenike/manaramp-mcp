@@ -28,9 +28,10 @@ const publishDeckTool = {
         return { content: [{ type: "text", text: `deck_id '${deck_id}' isn't owned by the calling account -- can't edit it.` }] };
       }
     }
+    const priceSource = await ctx.getPriceSourcePreference?.() ?? "cardkingdom";
     let analysis;
     try {
-      analysis = await analyzeDecklist(ctx.readDb, decklist_text);
+      analysis = await analyzeDecklist(ctx.readDb, decklist_text, priceSource);
     } catch (e) {
       return { content: [{ type: "text", text: e.message }] };
     }
@@ -80,6 +81,7 @@ const publishDeckTool = {
           bracket_estimate: bracket_estimate ?? null,
           bracket_level_matches_request: bracket_estimate && bracket_level_requested ? extractBracketNumber(bracket_level_requested) === extractBracketNumber(bracket_estimate) : null,
           price_usd: priceTotal,
+          price_source: priceSource,
           cards_not_priced: cardsNotPriced.length ? cardsNotPriced : void 0,
           mana_curve: consistency.mana_curve,
           curve_out_probability: consistency.curve_out_probability,

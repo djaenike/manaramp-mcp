@@ -32,8 +32,12 @@ interface DeckAnalysis {
 }
 /** Throws a plain Error with a user-facing message on a decklist that couldn't even be parsed --
  *  both callers turn that into their own tool-response shape rather than a thrown exception
- *  reaching the MCP transport. */
-declare function analyzeDecklist(readDb: Db, decklist_text: string): Promise<DeckAnalysis>;
+ *  reaching the MCP transport. `priceSource` (2026-09-21, defaults to 'cardkingdom' -- both callers
+ *  resolve it from ctx.getPriceSourcePreference?.() and pass it in, falling back the same way for a
+ *  legacy account with no preference saved or a local-stdio call with no such getter at all -- see
+ *  tools/types.ts's McpContext for the full reasoning) decides which market priceTotal normalizes
+ *  to, via queryCards's own priceSource param. */
+declare function analyzeDecklist(readDb: Db, decklist_text: string, priceSource?: "cardkingdom" | "manapool"): Promise<DeckAnalysis>;
 /** Shared by optimize_deck and publish_deck's own bracket_level_matches_request field. */
 declare function extractBracketNumber(s: unknown): string | null;
 

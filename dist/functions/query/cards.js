@@ -1,5 +1,7 @@
-function toSummary(doc) {
+function toSummary(doc, priceSource = "cardkingdom") {
   const printing = doc.scryfall_printings?.[0];
+  const preferred = priceSource === "manapool" ? doc.market_data?.manapool : doc.market_data?.cardkingdom;
+  const other = priceSource === "manapool" ? doc.market_data?.cardkingdom : doc.market_data?.manapool;
   return {
     oracle_id: doc._id,
     name: doc.name,
@@ -20,7 +22,7 @@ function toSummary(doc) {
     activated_abilities: doc.activated_abilities ?? null,
     triggered_abilities: doc.triggered_abilities ?? null,
     static_abilities: doc.static_abilities ?? null,
-    price_usd: doc.market_data?.cardkingdom?.price_usd ?? doc.market_data?.manapool?.price_usd ?? null,
+    price_usd: preferred?.price_usd ?? other?.price_usd ?? null,
     image_url: printing?.image_url ?? null,
     format_stats: doc.format_stats ?? []
   };
@@ -28,19 +30,19 @@ function toSummary(doc) {
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-async function queryCards(db, filters) {
+async function queryCards(db, filters, priceSource = "cardkingdom") {
   if (filters.names?.length) {
     const regexes = filters.names.map((n) => new RegExp(`^${escapeRegex(n)}$`, "i"));
     const docs2 = await db.collection("cards").find({ name: { $in: regexes } }).toArray();
-    return docs2.map(toSummary);
+    return docs2.map((doc) => toSummary(doc, priceSource));
   }
   if (filters.oracle_ids?.length) {
     const docs2 = await db.collection("cards").find({ _id: { $in: filters.oracle_ids } }).toArray();
-    return docs2.map(toSummary);
+    return docs2.map((doc) => toSummary(doc, priceSource));
   }
   if (filters.arena_grp_ids?.length) {
     const docs2 = await db.collection("cards").find({ arena_grp_ids: { $in: filters.arena_grp_ids } }).toArray();
-    return docs2.map(toSummary);
+    return docs2.map((doc) => toSummary(doc, priceSource));
   }
   const query = {};
   if (filters.name_contains) {
@@ -87,7 +89,7 @@ async function queryCards(db, filters) {
   if (filters.is_counterspell) query["abilities.is_counterspell"] = true;
   if (filters.is_recursion) query["abilities.is_recursion"] = true;
   const docs = await db.collection("cards").find(query).limit(Math.min(filters.limit ?? 25, 100)).toArray();
-  return docs.map(toSummary);
+  return docs.map((doc) => toSummary(doc, priceSource));
 }
 export {
   queryCards

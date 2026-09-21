@@ -171,7 +171,11 @@ interface CardSummary {
     image_url: string | null;
     format_stats: FormatStatsEntry[];
 }
-/** The one canonical query against manaramp's `cards` collection -- see file header. */
-declare function queryCards(db: Db, filters: QueryCardsFilters): Promise<CardSummary[]>;
+/** The one canonical query against manaramp's `cards` collection -- see file header. `priceSource`
+ *  (2026-09-21, defaults to 'cardkingdom' for callers that don't pass one -- no behavior change for
+ *  them) resolves each result's CardSummary.price_usd to the calling account's own preference; see
+ *  tools/shared/deck-analysis.ts's analyzeDecklist for the main consumer (optimize_deck/
+ *  publish_deck's deck-total pricing). */
+declare function queryCards(db: Db, filters: QueryCardsFilters, priceSource?: "cardkingdom" | "manapool"): Promise<CardSummary[]>;
 
 export { type CardSummary, type FormatStatsEntry, type QueryCardsFilters, queryCards };

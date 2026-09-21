@@ -62,7 +62,10 @@ const queryCardsTool: ToolDefinition<typeof inputSchema> = {
     "`false`; don't treat null the same as false when filtering or reasoning about a deck.",
   inputSchema,
   handler: async (args, ctx) => {
-    const cards = await queryCards(ctx.readDb, args);
+    // Falls back to 'cardkingdom' for a legacy account with no preference saved yet, AND for a
+    // local-stdio call where ctx has no such getter at all -- see tools/types.ts's McpContext.
+    const priceSource = (await ctx.getPriceSourcePreference?.()) ?? "cardkingdom";
+    const cards = await queryCards(ctx.readDb, args, priceSource);
     return { content: [{ type: "text" as const, text: JSON.stringify(cards, null, 2) }] };
   },
 };

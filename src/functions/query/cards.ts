@@ -149,8 +149,10 @@ interface CardSummary {
   format_stats: FormatStatsEntry[];
 }
 
-function toSummary(doc: MongoCardDoc): CardSummary {
+function toSummary(doc: MongoCardDoc, priceSource: "cardkingdom" | "manapool" = "cardkingdom"): CardSummary {
   const printing = doc.scryfall_printings?.[0];
+  const preferred = priceSource === "manapool" ? doc.market_data?.manapool : doc.market_data?.cardkingdom;
+  const other = priceSource === "manapool" ? doc.market_data?.cardkingdom : doc.market_data?.manapool;
   return {
     oracle_id: doc._id,
     name: doc.name,
@@ -171,7 +173,7 @@ function toSummary(doc: MongoCardDoc): CardSummary {
     activated_abilities: doc.activated_abilities ?? null,
     triggered_abilities: doc.triggered_abilities ?? null,
     static_abilities: doc.static_abilities ?? null,
-    price_usd: doc.market_data?.cardkingdom?.price_usd ?? doc.market_data?.manapool?.price_usd ?? null,
+    price_usd: preferred?.price_usd ?? other?.price_usd ?? null,
     image_url: printing?.image_url ?? null,
     format_stats: doc.format_stats ?? [],
   };
@@ -181,20 +183,24 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** The one canonical query against manaramp's `cards` collection -- see file header. */
-async function queryCards(db: Db, filters: QueryCardsFilters): Promise<CardSummary[]> {
+/** The one canonical query against manaramp's `cards` collection -- see file header. `priceSource`
+ *  (2026-09-21, defaults to 'cardkingdom' for callers that don't pass one -- no behavior change for
+ *  them) resolves each result's CardSummary.price_usd to the calling account's own preference; see
+ *  tools/shared/deck-analysis.ts's analyzeDecklist for the main consumer (optimize_deck/
+ *  publish_deck's deck-total pricing). */
+async function queryCards(db: Db, filters: QueryCardsFilters, priceSource: "cardkingdom" | "manapool" = "cardkingdom"): Promise<CardSummary[]> {
   if (filters.names?.length) {
     const regexes = filters.names.map((n) => new RegExp(`^${escapeRegex(n)}$`, "i"));
     const docs = await db.collection<MongoCardDoc>("cards").find({ name: { $in: regexes } }).toArray();
-    return docs.map(toSummary);
+    return docs.map((doc) => toSummary(doc, priceSource));
   }
   if (filters.oracle_ids?.length) {
     const docs = await db.collection<MongoCardDoc>("cards").find({ _id: { $in: filters.oracle_ids } }).toArray();
-    return docs.map(toSummary);
+    return docs.map((doc) => toSummary(doc, priceSource));
   }
   if (filters.arena_grp_ids?.length) {
     const docs = await db.collection<MongoCardDoc>("cards").find({ arena_grp_ids: { $in: filters.arena_grp_ids } }).toArray();
-    return docs.map(toSummary);
+    return docs.map((doc) => toSummary(doc, priceSource));
   }
 
   const query: Record<string, unknown> = {};
@@ -249,7 +255,7 @@ async function queryCards(db: Db, filters: QueryCardsFilters): Promise<CardSumma
     .limit(Math.min(filters.limit ?? 25, 100))
     .toArray();
 
-  return docs.map(toSummary);
+  return docs.map((doc) => toSummary(doc, priceSource));
 }
 
 export { queryCards };

@@ -32,7 +32,8 @@ const queryCardsTool = {
   description: "Look up real cards from manaramp's own database -- by exact name (batch), oracle_id, Arena grpId, or a filtered search (color identity, mana value, ability-tag booleans like is_removal/is_tutor/is_land_ramp/is_player_damage, price, format legality, oracle-text substring, etc). Prefer this over general knowledge when assembling or researching a decklist -- ground card choices in what's actually here rather than guessing, then feed the assembled decklist into optimize_deck. A `null` ability-tag field means this card hasn't been classified against that specific flag yet (Forge hasn't scripted it, or it's still mid-backfill) -- NOT a confirmed `false`; don't treat null the same as false when filtering or reasoning about a deck.",
   inputSchema,
   handler: async (args, ctx) => {
-    const cards = await queryCards(ctx.readDb, args);
+    const priceSource = await ctx.getPriceSourcePreference?.() ?? "cardkingdom";
+    const cards = await queryCards(ctx.readDb, args, priceSource);
     return { content: [{ type: "text", text: JSON.stringify(cards, null, 2) }] };
   }
 };

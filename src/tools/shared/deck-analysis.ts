@@ -30,8 +30,12 @@ interface DeckAnalysis {
 
 /** Throws a plain Error with a user-facing message on a decklist that couldn't even be parsed --
  *  both callers turn that into their own tool-response shape rather than a thrown exception
- *  reaching the MCP transport. */
-async function analyzeDecklist(readDb: Db, decklist_text: string): Promise<DeckAnalysis> {
+ *  reaching the MCP transport. `priceSource` (2026-09-21, defaults to 'cardkingdom' -- both callers
+ *  resolve it from ctx.getPriceSourcePreference?.() and pass it in, falling back the same way for a
+ *  legacy account with no preference saved or a local-stdio call with no such getter at all -- see
+ *  tools/types.ts's McpContext for the full reasoning) decides which market priceTotal normalizes
+ *  to, via queryCards's own priceSource param. */
+async function analyzeDecklist(readDb: Db, decklist_text: string, priceSource: "cardkingdom" | "manapool" = "cardkingdom"): Promise<DeckAnalysis> {
   const { commanderNames, deckEntries } = parseDecklistText(decklist_text);
   if (!commanderNames.length || !deckEntries.length) {
     throw new Error("Couldn't parse a commander and deck from the decklist -- check the 'Commander' / 'Deck' section headers and '<qty> <name>' line formatting.");
@@ -43,7 +47,7 @@ async function analyzeDecklist(readDb: Db, decklist_text: string): Promise<DeckA
   // The ONE query against `cards` this whole analysis needs -- consistency checks, mana curve,
   // price, and gatherDeckFacts's tutor/ramp/token/counterspell/recursion facts all read from this
   // same result instead of each running their own lookup.
-  const cards = await queryCards(readDb, { names: allIdentifierNames });
+  const cards = await queryCards(readDb, { names: allIdentifierNames }, priceSource);
   const facts = await gatherDeckFacts(readDb, commanderNames, uniqueDeckNames, cards);
   const consistency = validateDeck(cards, commanderNames, deckEntries);
 
