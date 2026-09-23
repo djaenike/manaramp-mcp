@@ -13,23 +13,23 @@ const inputSchema = {
   oracle_text_contains: z.string().optional().describe("Substring search against oracle text, case-insensitive."),
   legal_in: z.string().optional().describe("A format key, e.g. 'commander', 'modern' -- only returns cards legal in that format."),
   max_price_usd: z.number().optional(),
-  is_mana_rock: z.boolean().optional(),
-  is_card_draw: z.boolean().optional(),
-  is_removal: z.boolean().optional(),
-  is_mass_removal: z.boolean().optional(),
-  is_player_damage: z.boolean().optional().describe("A DealDamage effect aimed at player(s)/opponent(s) specifically -- distinct from is_removal, which counts any DealDamage effect regardless of target."),
-  is_token_generator: z.boolean().optional(),
-  token_type_contains: z.string().optional().describe("Substring match against abilities.token_types -- Forge's own raw identifiers (e.g. 'c_a_treasure_sac'), match loosely (e.g. 'treasure')."),
-  is_land_ramp: z.boolean().optional(),
-  is_extra_land_drop: z.boolean().optional(),
-  is_tutor: z.boolean().optional(),
-  is_counterspell: z.boolean().optional(),
-  is_recursion: z.boolean().optional(),
+  effect_in: z.array(z.string()).optional().describe(
+    `Ability search, rebuilt on each card's real Forge effect data (2026-09-22) -- matches any card with at least one effect step whose Forge ApiType effect name is in this list (OR-matched, so hedge with a few candidate names instead of guessing exactly one). Forge's real vocabulary is ~200 distinct names, mostly plain English verb-phrases: Draw, Discard, Mill, Scry, GainLife, LoseLife, DealDamage, Tap, Untap, Counter (counterspells), PutCounter/PutCounterAll, Token, Destroy/DestroyAll, Exile/ExileAll, Sacrifice/SacrificeAll, ChangeZone (tutors/recursion/discard-selection -- see effect_param_contains to narrow by Origin$/Destination$). Examples: removal = ["Destroy","DestroyAll","Exile","ExileAll"]; direct damage = ["DealDamage"]; sac outlets = ["Sacrifice","SacrificeAll"]. When unsure of the exact spelling, run a query WITHOUT this filter first and check a few results' effects[].result[].effect values before narrowing.`
+  ),
+  trigger_kind: z.enum(["cast", "activate", "triggered", "static", "replacement"]).optional().describe(
+    "Narrows effect_in to steps belonging to an effect of this specific kind -- e.g. 'activate' for an ACTIVATED removal ability specifically, vs any removal regardless of how it fires. Or use alone (no effect_in) for 'any static ability, don't care what it does.' The kind and effect_in match MUST belong to the same ability on the card, not just both exist somewhere on it."
+  ),
+  effect_param_contains: z.object({
+    key: z.string().describe("The raw Forge field name, e.g. 'Origin', 'Destination', 'ValidTgts', 'TokenScript'."),
+    value_contains: z.string().describe("Case-insensitive substring to match against that field's value.")
+  }).optional().describe(
+    `Precision filter within the SAME step matched by effect_in (or any step, if effect_in is omitted) -- checked against that step's params and its own conditions. Tutors = effect_in: ["ChangeZone"], effect_param_contains: {key: "Origin", value_contains: "Library"}. Player-targeted damage = effect_in: ["DealDamage"], effect_param_contains: {key: "ValidTgts", value_contains: "Player"} (also try "Opponent", scripts vary). Only one key/value pair per call -- run two queries and intersect results if you need two conditions on the same step.`
+  ),
   limit: z.number().optional().describe("Max results (default 25, capped at 100). Ignored for names/oracle_ids/arena_grp_ids batch lookups.")
 };
 const queryCardsTool = {
   name: "query_cards",
-  description: "Look up real cards from manaramp's own database -- by exact name (batch), oracle_id, Arena grpId, or a filtered search (color identity, mana value, ability-tag booleans like is_removal/is_tutor/is_land_ramp/is_player_damage, price, format legality, oracle-text substring, etc). Prefer this over general knowledge when assembling or researching a decklist -- ground card choices in what's actually here rather than guessing, then feed the assembled decklist into optimize_deck. A `null` ability-tag field means this card hasn't been classified against that specific flag yet (Forge hasn't scripted it, or it's still mid-backfill) -- NOT a confirmed `false`; don't treat null the same as false when filtering or reasoning about a deck.",
+  description: "Look up real cards from manaramp's own database -- by exact name (batch), oracle_id, Arena grpId, or a filtered search (color identity, mana value, ability search via effect_in/trigger_kind/effect_param_contains -- Forge's own real effect data, see effect_in's own description for the vocabulary and examples -- price, format legality, oracle-text substring, etc). Prefer this over general knowledge when assembling or researching a decklist -- ground card choices in what's actually here rather than guessing, then feed the assembled decklist into optimize_deck. An empty `effects` array on a result means this card genuinely has no scripted ability (a vanilla creature, a basic land) -- confirmed, not unclassified.",
   inputSchema,
   handler: async (args, ctx) => {
     const priceSource = await ctx.getPriceSourcePreference?.() ?? "cardkingdom";

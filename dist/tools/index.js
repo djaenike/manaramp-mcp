@@ -1,5 +1,5 @@
-import { optimizeDeckTool } from "./optimize-deck.js";
-import { publishDeckTool } from "./publish-deck.js";
+import { validateAndSubmitTool } from "./validate-and-submit.js";
+import { formatGuidelinesTool } from "./format-guidelines.js";
 import { readDeckTool } from "./read-deck.js";
 import { queryCardsTool } from "./search-cards.js";
 import { queryCombosTool } from "./query-combos.js";
@@ -10,8 +10,7 @@ import { arenaDraftGameAdviceTool } from "./arena-game-advice.js";
 import { pushDraftResultTool, pushGameLogTool } from "./internal-tools.js";
 import { toRemoteProxy } from "./shared/remote-proxy.js";
 const mongoBackedTools = [
-  optimizeDeckTool,
-  publishDeckTool,
+  validateAndSubmitTool,
   readDeckTool,
   queryCardsTool,
   queryCombosTool,
@@ -19,6 +18,7 @@ const mongoBackedTools = [
 ];
 const tools = [
   ...mongoBackedTools,
+  formatGuidelinesTool,
   getAccountSettingsTool,
   pushDraftResultTool,
   pushGameLogTool
@@ -27,6 +27,7 @@ const localTools = [
   arenaDraftAssistanceTool,
   arenaDraftGameAdviceTool,
   getAccountSettingsTool,
+  formatGuidelinesTool,
   ...mongoBackedTools.map(toRemoteProxy),
   toRemoteProxy(pushDraftResultTool),
   toRemoteProxy(pushGameLogTool)
@@ -34,15 +35,15 @@ const localTools = [
 export {
   arenaDraftAssistanceTool,
   arenaDraftGameAdviceTool,
+  formatGuidelinesTool,
   getAccountSettingsTool,
   localTools,
-  optimizeDeckTool,
-  publishDeckTool,
   pushDraftResultTool,
   pushGameLogTool,
   queryCardsTool,
   queryCombosTool,
   querySynergiesTool,
   readDeckTool,
-  tools
+  tools,
+  validateAndSubmitTool
 };

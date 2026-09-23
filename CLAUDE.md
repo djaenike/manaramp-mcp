@@ -60,9 +60,16 @@ comment anywhere still describes a tool hitting a live API directly, that's desc
 already-replaced design -- the source of truth for what each sub-tool actually does is its own
 file header and this section.
 
+**UPDATED 2026-09-22 -- `manage_deck` in this section is stale, describing a design already
+superseded twice over before this update (see tools/index.ts's own header for the real, current
+history: manage_deck -> optimize_deck/publish_deck/read_deck (2026-09-18) -> validate_and_submit/
+read_deck plus a new format_guidelines tool (2026-09-22, replacing optimize_deck/publish_deck --
+real feedback was that deck building leaned too combo-oriented)). tools/index.ts's header is the
+source of truth for the current tool list; kept below for history/context on the auth/transport
+architecture, which hasn't changed.**
+
 **Two disjoint tool sets** (`tools/index.ts`):
-- `tools` (8: `manage_deck`, `query_cards`, `query_synergies`, `query_combos`, `query_decks`,
-  `query_draft_results`, `push_game_log`, `push_draft_result`) -- registered ONLY by manaramp's
+- `tools` (registered ONLY by manaramp's
   remote `/mcp` endpoint (`src/routes/mcp/+server.ts` in the sibling `manaramp` repo), which imports
   this package's `.` export and runs these handlers IN-PROCESS inside its own Cloudflare Worker
   request, passing an already-open `Db` straight into each handler's second `ctx` argument

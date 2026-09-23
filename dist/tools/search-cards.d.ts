@@ -34,18 +34,18 @@ declare const inputSchema: {
     oracle_text_contains: z.ZodOptional<z.ZodString>;
     legal_in: z.ZodOptional<z.ZodString>;
     max_price_usd: z.ZodOptional<z.ZodNumber>;
-    is_mana_rock: z.ZodOptional<z.ZodBoolean>;
-    is_card_draw: z.ZodOptional<z.ZodBoolean>;
-    is_removal: z.ZodOptional<z.ZodBoolean>;
-    is_mass_removal: z.ZodOptional<z.ZodBoolean>;
-    is_player_damage: z.ZodOptional<z.ZodBoolean>;
-    is_token_generator: z.ZodOptional<z.ZodBoolean>;
-    token_type_contains: z.ZodOptional<z.ZodString>;
-    is_land_ramp: z.ZodOptional<z.ZodBoolean>;
-    is_extra_land_drop: z.ZodOptional<z.ZodBoolean>;
-    is_tutor: z.ZodOptional<z.ZodBoolean>;
-    is_counterspell: z.ZodOptional<z.ZodBoolean>;
-    is_recursion: z.ZodOptional<z.ZodBoolean>;
+    effect_in: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
+    trigger_kind: z.ZodOptional<z.ZodEnum<["cast", "activate", "triggered", "static", "replacement"]>>;
+    effect_param_contains: z.ZodOptional<z.ZodObject<{
+        key: z.ZodString;
+        value_contains: z.ZodString;
+    }, "strip", z.ZodTypeAny, {
+        key: string;
+        value_contains: string;
+    }, {
+        key: string;
+        value_contains: string;
+    }>>;
     limit: z.ZodOptional<z.ZodNumber>;
 };
 declare const queryCardsTool: ToolDefinition<typeof inputSchema>;

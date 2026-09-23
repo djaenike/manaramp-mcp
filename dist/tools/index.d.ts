@@ -1,5 +1,5 @@
-export { optimizeDeckTool } from './optimize-deck.js';
-export { publishDeckTool } from './publish-deck.js';
+export { validateAndSubmitTool } from './validate-and-submit.js';
+export { formatGuidelinesTool } from './format-guidelines.js';
 export { readDeckTool } from './read-deck.js';
 export { queryCardsTool } from './search-cards.js';
 export { queryCombosTool } from './query-combos.js';
@@ -30,6 +30,13 @@ import 'mongodb';
  *   publish_deck (the only thing that writes to `decks`), and read_deck (load an existing deck to
  *   edit, or list the account's decks) -- see tools/shared/deck-analysis.ts for the analysis logic
  *   shared by optimize_deck/publish_deck so they can't drift apart on what "the facts" are.
+ *
+ *   UPDATED 2026-09-22: optimize_deck/publish_deck retired, replaced by ONE tool,
+ *   validate_and_submit (same analyze-vs-persist split, now a `submit` boolean rather than two tool
+ *   names -- see that tool's own header for why), plus a brand new format_guidelines (pure reference
+ *   data -- real Commander Bracket criteria + general composition guidance, no deck/DB involved) --
+ *   both added specifically to fix real "too combo-oriented" feedback on the old pair. read_deck is
+ *   unchanged.
  * - query_cards promoted out of "internal only" into a real conversational tool (renamed export,
  *   same wire name -- see tools/search-cards.ts's header for why the name itself can't change).
  * - query_combos and query_synergies are brand new standalone tools -- neither `combos` nor

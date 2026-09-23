@@ -14,12 +14,21 @@ import { CardSummary } from '../query/cards.js';
  * queryCombos for the combo-detection step -- not a separate `combos` query of its own.
  *
  * tutors_found/land_ramp_found/extra_land_drops_found/token_generators_found/counterspells_found/
- * recursion_found (2026-09-17, added alongside the new Forge-derived abilities booleans -- see
+ * recursion_found (2026-09-17, originally backed by Forge-derived abilities booleans -- see
  * schema/cards.ts in the `manaramp` repo) work the same way as game_changers_found/etc, just backed
  * by Forge's own per-card classification instead of a hardcoded name list. Takes the already-fetched
  * `cards` from tools/shared/deck-analysis.ts (optimize_deck/publish_deck)'s own queryCards call (it needs the SAME card data tools/shared/deck-analysis.ts (optimize_deck/publish_deck)
  * already has for consistency checks/pricing) instead of running a second independent `cards` query
  * -- one canonical query per collection per call, same rule as everywhere else in this package.
+ *
+ * Rebuilt on `effects` (2026-09-22), not the old abilities.is_X booleans -- see functions/query/
+ * cards.ts's own header for the full reasoning. The matching RULES below are a deliberate, faithful
+ * port of exactly what each old boolean used to mean (manaramp's forge-script.ts's
+ * classifyZoneChanges/hasExtraLandDrop/effect-name scan), not a fresh reinterpretation -- e.g.
+ * "tutor" is still specifically ChangeZone Library->Hand, not "any card-selection effect." The
+ * difference now is these rules live here as plain data (EffectFilter objects) instead of being
+ * pre-computed once at ingest time -- extending or correcting one is a code change in THIS file, not
+ * a database re-sweep.
  */
 
 interface DeckFacts {
@@ -33,6 +42,12 @@ interface DeckFacts {
     token_generators_found: string[];
     counterspells_found: string[];
     recursion_found: string[];
+    /** Added 2026-09-22, same weight as every other *_found fact -- combos_found used to be the only
+     *  fact with any real elaboration (permalink/steps/speed), which skewed how validate_and_submit
+     *  got used in practice ("too combo-oriented" feedback). These two round out the deck's real
+     *  card-advantage/interaction picture without singling any one category out. */
+    card_draw_found: string[];
+    removal_found: string[];
 }
 declare function gatherDeckFacts(db: Db, commanderNames: string[], cardNames: string[], cards: CardSummary[]): Promise<DeckFacts>;
 
