@@ -320,6 +320,28 @@ header comment for why: it's shared state the two ALREADY-permanently-local-only
 keeping it there avoids awkwardly injecting it through `local/index.ts`'s otherwise-uniform, flat
 tool-registration loop.
 
+## Known follow-ups (not yet fixed, 2026-09-22)
+
+- **`tokens` on `EffectStep` (functions/query/cards.ts) isn't deduped across a result set.**
+  `enrichEffectsWithTokens` inlines the FULL `TokenDescriptor` (name/types/pt/colors/keywords/its own
+  `effects` tree) into every step that references it, per card, every `queryCards` call. A search
+  returning 15 different Treasure-making cards repeats the same Treasure Token descriptor 15 times in
+  the response instead of once -- token usage scales with result-set size here, not card complexity,
+  unlike the (expected, fine) growth from `branch`/`choices`/`nested_effects` genuinely capturing real
+  ability content that wasn't captured before. Not urgent -- revisit once real query payload sizes are
+  visible after the post-restructuring mass resync. Fix sketch if it becomes a real problem: return a
+  top-level `tokens: Record<name, TokenDescriptor>` map alongside `CardSummary[]` and have each step
+  keep just the bare name, same "shared reference, resolved once" shape the token_scripts collection
+  itself already uses server-side.
+- **A card's `forge_raw.text` (manaramp's `cards`/`token_scripts` collections) means future parser
+  changes to `parseForgeScript`/`parseTokenScript` (manaramp's `ingest/forge-script.ts`) don't need a
+  fresh live Forge fetch to re-verify against -- the exact script text is already stored per card/
+  token, so a structural change (a new pointer key, a Branch/Charm edge case, etc.) can be validated
+  by re-parsing every ALREADY-STORED `forge_raw.text` locally and diffing the derived `effects` before
+  vs after, no network calls or `forge_effects_synced_at` reset needed. Worth building a small
+  offline-reparse script for this the next time a structural parser change needs validating across
+  the whole card pool, rather than resetting + re-fetching from Forge again.
+
 ## Deck delivery pipeline (REMOVED -- historical only)
 
 `runChecksAndDeliver`, `delivery/report_data.ts`, `delivery/html_renderer.ts`,
