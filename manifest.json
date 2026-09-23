@@ -23,7 +23,7 @@
     "manaramp_api_key": {
       "type": "string",
       "title": "Manaramp API Key",
-      "description": "From your manaramp.com profile page (MCP API key section). Required so the Arena tools can push finished draft/match logs to your account and pull real 17Lands win-rate data for pack cards -- both live in manaramp's own database, not on this machine.",
+      "description": "From your manaramp.com MCP Setup page (manaramp.com/mcp-setup). Required so the Arena tools can push finished draft/match logs to your account and pull real 17Lands win-rate data for pack cards -- both live in manaramp's own database, not on this machine.",
       "sensitive": true,
       "required": true
     }
