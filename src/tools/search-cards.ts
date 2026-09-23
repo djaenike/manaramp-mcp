@@ -87,10 +87,12 @@ const queryCardsTool: ToolDefinition<typeof inputSchema> = {
     "scripted ability (a vanilla creature, a basic land) -- confirmed, not unclassified.",
   inputSchema,
   handler: async (args, ctx) => {
-    // Falls back to 'cardkingdom' for a legacy account with no preference saved yet, AND for a
-    // local-stdio call where ctx has no such getter at all -- see tools/types.ts's McpContext.
+    // Falls back to 'cardkingdom'/'most_recent' for a legacy account with no preference saved yet,
+    // AND for a local-stdio call where ctx has no such getter at all -- see tools/types.ts's
+    // McpContext.
     const priceSource = (await ctx.getPriceSourcePreference?.()) ?? "cardkingdom";
-    const cards = await queryCards(ctx.readDb, args, priceSource);
+    const preferredPrinting = (await ctx.getPreferredPrintingPreference?.()) ?? "most_recent";
+    const cards = await queryCards(ctx.readDb, args, priceSource, preferredPrinting);
     return { content: [{ type: "text" as const, text: JSON.stringify(cards, null, 2) }] };
   },
 };

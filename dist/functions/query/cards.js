@@ -16,6 +16,26 @@ function resolvePriceForEntry(entry, priceSource) {
   const other = priceSource === "manapool" ? entry.cardkingdom : entry.manapool;
   return preferred?.price_usd ?? other?.price_usd ?? null;
 }
+function pickCheapestPrinting(printings, marketData, priceSource, pinnedScryfallId) {
+  if (pinnedScryfallId) {
+    const pinned = printings.find((p) => p.scryfall_id === pinnedScryfallId);
+    if (pinned) return pinned;
+  }
+  let best = null;
+  let bestPrice = Infinity;
+  for (const p of printings) {
+    const entry = marketData.find((m) => m.scryfall_id === p.scryfall_id);
+    const price = resolvePriceForEntry(entry, priceSource);
+    if (price != null && price < bestPrice) {
+      bestPrice = price;
+      best = p;
+    }
+  }
+  return best ?? pickDefaultPrinting(printings, pinnedScryfallId);
+}
+function pickPreferredPrinting(printings, marketData, priceSource, preferredPrinting, pinnedScryfallId) {
+  return preferredPrinting === "cheapest" ? pickCheapestPrinting(printings, marketData, priceSource, pinnedScryfallId) : pickDefaultPrinting(printings, pinnedScryfallId);
+}
 function collectTokenScriptNames(effects) {
   const names = /* @__PURE__ */ new Set();
   const visitStep = (step) => {
@@ -63,10 +83,11 @@ function enrichEffectsWithTokens(effects, tokensById) {
   }
   return effects.map(enrichEffect);
 }
-function toSummary(doc, priceSource, tokensById, pinnedScryfallId) {
+function toSummary(doc, priceSource, tokensById, pinnedScryfallId, preferredPrinting = "most_recent") {
   const printings = doc.scryfall_printings ?? [];
-  const printing = pickDefaultPrinting(printings, pinnedScryfallId);
-  const marketEntry = (doc.market_data ?? []).find((m) => m.scryfall_id === printing?.scryfall_id);
+  const marketData = doc.market_data ?? [];
+  const printing = pickPreferredPrinting(printings, marketData, priceSource, preferredPrinting, pinnedScryfallId);
+  const marketEntry = marketData.find((m) => m.scryfall_id === printing?.scryfall_id);
   return {
     oracle_id: doc._id,
     name: doc.name,
@@ -100,9 +121,9 @@ async function resolveTokenScripts(db, docs) {
   ).toArray();
   return new Map(found.map(({ _id, ...descriptor }) => [_id, descriptor]));
 }
-async function finalize(db, docs, priceSource, pinned) {
+async function finalize(db, docs, priceSource, pinned, preferredPrinting = "most_recent") {
   const tokensById = await resolveTokenScripts(db, docs);
-  return docs.map((doc) => toSummary(doc, priceSource, tokensById, pinned(doc._id)));
+  return docs.map((doc) => toSummary(doc, priceSource, tokensById, pinned(doc._id), preferredPrinting));
 }
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -114,20 +135,20 @@ function keyPaths(key) {
   if (zoneKey) paths.push(`zone_change.${zoneKey}`);
   return paths;
 }
-async function queryCards(db, filters, priceSource = "cardkingdom") {
+async function queryCards(db, filters, priceSource = "cardkingdom", preferredPrinting = "most_recent") {
   const pinned = (id) => filters.printing_preferences?.[id];
   if (filters.names?.length) {
     const regexes = filters.names.map((n) => new RegExp(`^${escapeRegex(n)}$`, "i"));
     const docs2 = await db.collection("cards").find({ name: { $in: regexes } }).toArray();
-    return finalize(db, docs2, priceSource, pinned);
+    return finalize(db, docs2, priceSource, pinned, preferredPrinting);
   }
   if (filters.oracle_ids?.length) {
     const docs2 = await db.collection("cards").find({ _id: { $in: filters.oracle_ids } }).toArray();
-    return finalize(db, docs2, priceSource, pinned);
+    return finalize(db, docs2, priceSource, pinned, preferredPrinting);
   }
   if (filters.arena_grp_ids?.length) {
     const docs2 = await db.collection("cards").find({ arena_grp_ids: { $in: filters.arena_grp_ids } }).toArray();
-    return finalize(db, docs2, priceSource, pinned);
+    return finalize(db, docs2, priceSource, pinned, preferredPrinting);
   }
   const query = {};
   if (filters.name_contains) {
@@ -175,7 +196,7 @@ async function queryCards(db, filters, priceSource = "cardkingdom") {
     query.effects = { $elemMatch: effectMatch };
   }
   const docs = await db.collection("cards").find(query).limit(Math.min(filters.limit ?? 25, 100)).toArray();
-  return finalize(db, docs, priceSource, pinned);
+  return finalize(db, docs, priceSource, pinned, preferredPrinting);
 }
 export {
   queryCards

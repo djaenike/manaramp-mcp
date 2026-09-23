@@ -348,6 +348,47 @@ function resolvePriceForEntry(entry: MarketDataEntry | undefined, priceSource: "
   return preferred?.price_usd ?? other?.price_usd ?? null;
 }
 
+/** Whichever printing resolves to the lowest price at `priceSource` (2026-09-23) -- same logic as
+ *  manaramp's own pickCheapestPrinting (src/lib/server/cards/pricing.ts), kept as a separate copy
+ *  per this repo's established boundary. `pinnedScryfallId` still wins outright. Falls back to
+ *  pickDefaultPrinting (most-recent) if no printing has a resolvable price at all. */
+function pickCheapestPrinting(
+  printings: MongoCardDoc["scryfall_printings"],
+  marketData: MarketDataEntry[],
+  priceSource: "cardkingdom" | "manapool",
+  pinnedScryfallId?: string
+): MongoCardDoc["scryfall_printings"][number] | null {
+  if (pinnedScryfallId) {
+    const pinned = printings.find((p) => p.scryfall_id === pinnedScryfallId);
+    if (pinned) return pinned;
+  }
+  let best: MongoCardDoc["scryfall_printings"][number] | null = null;
+  let bestPrice = Infinity;
+  for (const p of printings) {
+    const entry = marketData.find((m) => m.scryfall_id === p.scryfall_id);
+    const price = resolvePriceForEntry(entry, priceSource);
+    if (price != null && price < bestPrice) {
+      bestPrice = price;
+      best = p;
+    }
+  }
+  return best ?? pickDefaultPrinting(printings, pinnedScryfallId);
+}
+
+/** Branches on the account's preferred_printing (McpContext.getPreferredPrintingPreference) -- the
+ *  entry point queryCards actually calls, instead of pickDefaultPrinting directly. */
+function pickPreferredPrinting(
+  printings: MongoCardDoc["scryfall_printings"],
+  marketData: MarketDataEntry[],
+  priceSource: "cardkingdom" | "manapool",
+  preferredPrinting: "most_recent" | "cheapest",
+  pinnedScryfallId?: string
+): MongoCardDoc["scryfall_printings"][number] | null {
+  return preferredPrinting === "cheapest"
+    ? pickCheapestPrinting(printings, marketData, priceSource, pinnedScryfallId)
+    : pickDefaultPrinting(printings, pinnedScryfallId);
+}
+
 /** Every TokenScript$ value referenced anywhere in one card's effects tree, walking into
  *  nested_effects (both a step's own and the trigger's) and a Branch step's true_result/false_result
  *  arms -- a TokenScript$ hidden inside a nested ability (e.g. an Effect-object token maker) or only
@@ -420,10 +461,17 @@ function enrichEffectsWithTokens(effects: Effect[], tokensById: Map<string, Toke
   return effects.map(enrichEffect);
 }
 
-function toSummary(doc: MongoCardDoc, priceSource: "cardkingdom" | "manapool", tokensById: Map<string, TokenDescriptor>, pinnedScryfallId?: string): CardSummary {
+function toSummary(
+  doc: MongoCardDoc,
+  priceSource: "cardkingdom" | "manapool",
+  tokensById: Map<string, TokenDescriptor>,
+  pinnedScryfallId?: string,
+  preferredPrinting: "most_recent" | "cheapest" = "most_recent"
+): CardSummary {
   const printings = doc.scryfall_printings ?? [];
-  const printing = pickDefaultPrinting(printings, pinnedScryfallId);
-  const marketEntry = (doc.market_data ?? []).find((m) => m.scryfall_id === printing?.scryfall_id);
+  const marketData = doc.market_data ?? [];
+  const printing = pickPreferredPrinting(printings, marketData, priceSource, preferredPrinting, pinnedScryfallId);
+  const marketEntry = marketData.find((m) => m.scryfall_id === printing?.scryfall_id);
   return {
     oracle_id: doc._id,
     name: doc.name,
@@ -469,9 +517,15 @@ async function resolveTokenScripts(db: Db, docs: MongoCardDoc[]): Promise<Map<st
 
 /** Shared tail end for every queryCards branch -- resolves TokenScript$ references once across the
  *  whole result batch, then maps each doc to its CardSummary. */
-async function finalize(db: Db, docs: MongoCardDoc[], priceSource: "cardkingdom" | "manapool", pinned: (id: string) => string | undefined): Promise<CardSummary[]> {
+async function finalize(
+  db: Db,
+  docs: MongoCardDoc[],
+  priceSource: "cardkingdom" | "manapool",
+  pinned: (id: string) => string | undefined,
+  preferredPrinting: "most_recent" | "cheapest" = "most_recent"
+): Promise<CardSummary[]> {
   const tokensById = await resolveTokenScripts(db, docs);
-  return docs.map((doc) => toSummary(doc, priceSource, tokensById, pinned(doc._id)));
+  return docs.map((doc) => toSummary(doc, priceSource, tokensById, pinned(doc._id), preferredPrinting));
 }
 
 function escapeRegex(s: string): string {
@@ -494,21 +548,26 @@ function keyPaths(key: string): string[] {
  *  (2026-09-21, defaults to 'cardkingdom' for callers that don't pass one -- no behavior change for
  *  them) resolves each result's CardSummary.price_usd to the calling account's own preference; see
  *  tools/shared/deck-analysis.ts's analyzeDecklist for the main consumer. */
-async function queryCards(db: Db, filters: QueryCardsFilters, priceSource: "cardkingdom" | "manapool" = "cardkingdom"): Promise<CardSummary[]> {
+async function queryCards(
+  db: Db,
+  filters: QueryCardsFilters,
+  priceSource: "cardkingdom" | "manapool" = "cardkingdom",
+  preferredPrinting: "most_recent" | "cheapest" = "most_recent"
+): Promise<CardSummary[]> {
   const pinned = (id: string) => filters.printing_preferences?.[id];
 
   if (filters.names?.length) {
     const regexes = filters.names.map((n) => new RegExp(`^${escapeRegex(n)}$`, "i"));
     const docs = await db.collection<MongoCardDoc>("cards").find({ name: { $in: regexes } }).toArray();
-    return finalize(db, docs, priceSource, pinned);
+    return finalize(db, docs, priceSource, pinned, preferredPrinting);
   }
   if (filters.oracle_ids?.length) {
     const docs = await db.collection<MongoCardDoc>("cards").find({ _id: { $in: filters.oracle_ids } }).toArray();
-    return finalize(db, docs, priceSource, pinned);
+    return finalize(db, docs, priceSource, pinned, preferredPrinting);
   }
   if (filters.arena_grp_ids?.length) {
     const docs = await db.collection<MongoCardDoc>("cards").find({ arena_grp_ids: { $in: filters.arena_grp_ids } }).toArray();
-    return finalize(db, docs, priceSource, pinned);
+    return finalize(db, docs, priceSource, pinned, preferredPrinting);
   }
 
   const query: Record<string, unknown> = {};
@@ -576,7 +635,7 @@ async function queryCards(db: Db, filters: QueryCardsFilters, priceSource: "card
     .limit(Math.min(filters.limit ?? 25, 100))
     .toArray();
 
-  return finalize(db, docs, priceSource, pinned);
+  return finalize(db, docs, priceSource, pinned, preferredPrinting);
 }
 
 export { queryCards };

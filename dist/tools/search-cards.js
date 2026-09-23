@@ -33,7 +33,8 @@ const queryCardsTool = {
   inputSchema,
   handler: async (args, ctx) => {
     const priceSource = await ctx.getPriceSourcePreference?.() ?? "cardkingdom";
-    const cards = await queryCards(ctx.readDb, args, priceSource);
+    const preferredPrinting = await ctx.getPreferredPrintingPreference?.() ?? "most_recent";
+    const cards = await queryCards(ctx.readDb, args, priceSource, preferredPrinting);
     return { content: [{ type: "text", text: JSON.stringify(cards, null, 2) }] };
   }
 };

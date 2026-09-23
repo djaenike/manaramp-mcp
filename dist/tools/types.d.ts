@@ -42,6 +42,10 @@ interface McpToolResponse {
  *  union rather than importing it, same repo-boundary call as everything else in this file (manaramp
  *  doesn't depend on manaramp-mcp, and this package has no dependency back on manaramp either). */
 type PriceSource = "cardkingdom" | "manapool";
+/** 'most_recent' | 'cheapest' -- which printing pickPreferredPrinting resolves to when a caller
+ *  hasn't pinned a specific one. Mirrors manaramp's own PreferredPrinting type (src/lib/server/
+ *  mcp-keys/index.ts) exactly, same repo-boundary local-literal-union call as PriceSource above. */
+type PreferredPrinting = "most_recent" | "cheapest";
 interface McpContext {
     /** MONGODB_READONLY_URI-backed -- cards/sets/commander_synergies/combos. Read-only at the
      *  database level regardless of what a handler tries to do with it. */
@@ -77,6 +81,11 @@ interface McpContext {
      *  Card Kingdom before this preference existed, so that's not a behavior change for anyone who
      *  hasn't touched the /settings toggle). */
     getPriceSourcePreference?: () => Promise<PriceSource>;
+    /** Lazily resolves this account's saved printing preference (2026-09-23, mirrors
+     *  getPriceSourcePreference directly above -- same trust tier, same optional-for-stdio/predates-
+     *  the-preference reasoning). Falls back to 'most_recent' when absent, same default manaramp's own
+     *  getPreferredPrinting uses. */
+    getPreferredPrintingPreference?: () => Promise<PreferredPrinting>;
 }
 interface ToolDefinition<Shape extends ZodRawShape = ZodRawShape> {
     name: string;
@@ -85,4 +94,4 @@ interface ToolDefinition<Shape extends ZodRawShape = ZodRawShape> {
     handler: (args: z.infer<z.ZodObject<Shape>>, ctx: McpContext) => Promise<McpToolResponse>;
 }
 
-export type { McpContext, McpToolResponse, PriceSource, ToolDefinition };
+export type { McpContext, McpToolResponse, PreferredPrinting, PriceSource, ToolDefinition };

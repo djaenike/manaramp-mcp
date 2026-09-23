@@ -290,6 +290,6 @@ interface CardSummary {
  *  (2026-09-21, defaults to 'cardkingdom' for callers that don't pass one -- no behavior change for
  *  them) resolves each result's CardSummary.price_usd to the calling account's own preference; see
  *  tools/shared/deck-analysis.ts's analyzeDecklist for the main consumer. */
-declare function queryCards(db: Db, filters: QueryCardsFilters, priceSource?: "cardkingdom" | "manapool"): Promise<CardSummary[]>;
+declare function queryCards(db: Db, filters: QueryCardsFilters, priceSource?: "cardkingdom" | "manapool", preferredPrinting?: "most_recent" | "cheapest"): Promise<CardSummary[]>;
 
 export { type CardSummary, type Effect, type EffectBranch, type EffectClause, type EffectCostPart, type EffectStep, type EffectValue, type FormatStatsEntry, type QueryCardsFilters, type TokenDescriptor, type ZoneChange, queryCards };
