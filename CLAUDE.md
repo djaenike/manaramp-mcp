@@ -320,6 +320,19 @@ header comment for why: it's shared state the two ALREADY-permanently-local-only
 keeping it there avoids awkwardly injecting it through `local/index.ts`'s otherwise-uniform, flat
 tool-registration loop.
 
+## Status as of 2026-09-23
+
+`preferred_printing` ('most_recent' | 'cheapest', mirrors manaramp's own `price_source` shape
+exactly) added: `PreferredPrinting` type + `McpContext.getPreferredPrintingPreference` in
+`tools/types.ts`, `pickCheapestPrinting`/`pickPreferredPrinting` in `functions/query/cards.ts`
+(mirrors manaramp's `src/lib/server/cards/pricing.ts`, same repo-boundary duplication rule),
+threaded through `queryCards`/`toSummary`/`finalize` and resolved in `search-cards.ts`'s handler the
+same lazy way `price_source` already is. manaramp's `/mcp` route supplies the actual getter
+(`getPreferredPrinting` from its own `mcp-keys`). Only `query_cards` respects this so far --
+`validate_and_submit`/`format_guidelines`'s own `queryCards` calls still default to `most_recent`,
+not yet threaded through from the calling account's real preference (small, contained follow-up if
+that turns out to matter).
+
 ## Known follow-ups (not yet fixed, 2026-09-22)
 
 - **`tokens` on `EffectStep` (functions/query/cards.ts) isn't deduped across a result set.**
