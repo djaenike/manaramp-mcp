@@ -6,7 +6,7 @@ const getAccountSettingsTool = {
   inputSchema,
   handler: async (_args, ctx) => {
     const player_log_path = ctx?.getPlayerLogPath ? await ctx.getPlayerLogPath() : await resolvePlayerLogPath();
-    return { content: [{ type: "text", text: JSON.stringify({ player_log_path }, null, 2) }] };
+    return { content: [{ type: "text", text: JSON.stringify({ player_log_path }) }] };
   }
 };
 export {

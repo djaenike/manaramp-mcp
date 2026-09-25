@@ -57,7 +57,7 @@ const pushDraftResultTool: ToolDefinition<typeof pushDraftResultInputSchema> = {
       draft_id, event_name, draft_format, picks,
       packs_seen: packs_seen.map((p) => ({ pack_number: p.pack_number, pick_number: p.pick_number, grp_ids: p.grp_ids })),
     });
-    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
   },
 };
 
@@ -80,7 +80,7 @@ const pushGameLogTool: ToolDefinition<typeof pushGameLogInputSchema> = {
   inputSchema: pushGameLogInputSchema,
   handler: async ({ deck_id, format, events, result }, ctx) => {
     const pushed = await pushGameLog(ctx.writeDb, ctx.ownerUserId, { deck_id, format, events, result });
-    return { content: [{ type: "text" as const, text: JSON.stringify(pushed, null, 2) }] };
+    return { content: [{ type: "text" as const, text: JSON.stringify(pushed) }] };
   },
 };
 

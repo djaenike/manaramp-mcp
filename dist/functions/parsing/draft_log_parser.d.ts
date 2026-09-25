@@ -48,14 +48,27 @@
  *     new pack is ready -- gate on `DraftStatus === "PickNext"` or you'll
  *     process stale/duplicate pack data.
  *
+ *   - DRAFT ID (fixed 2026-09-25, against a real Quick Draft log): the draft-start request lines
+ *     appear as `==> EventJoin` / `==> BotDraftDraftStatus` (no underscores) -- the underscored
+ *     forms this file originally matched never occurred, so draftId stayed null and nothing was
+ *     ever pushed. Their `request` also carries EventName directly (no nested Payload string), and
+ *     their `id` is a random PER-REQUEST id, not a draft id, so it was never a usable key anyway.
+ *     The real stable id is the Course: Arena logs `"CourseId":"...","InternalEventName":"..."` in
+ *     the EventJoin response and in every EventGetCoursesV2 refresh, so the scanner records every
+ *     CourseId it sees by event name and uses the one for the current draft's event. Premier's own
+ *     Draft.Notify `draftId` wins when present; a hash of the event name plus P1P1's pack is the
+ *     last-resort fallback (still deterministic, so re-pushes upsert the same record).
+ *
  * NOT yet implemented: Traditional Draft and Sealed formats use their own
  * separate marker strings again (traditional shares some shape with premier
  * but is a distinct code path in the reference tools above). Left as a TODO
  * rather than guessed at.
  */
 interface DraftStartInfo {
-    draftId: string;
     eventName: string;
+    /** true for EventJoin (a paid entry, always a brand-new draft); false for a DraftStatus poll,
+     *  which also fires when resuming an in-progress draft. */
+    isJoin: boolean;
 }
 interface PackInfo {
     draftId?: string;
@@ -85,6 +98,7 @@ interface DraftState {
         pickNumber: number;
         cards: string[];
     }>;
+    draftComplete: boolean;
 }
 /**
  * Detect a draft-start line and classify (loosely -- full set/type
@@ -115,7 +129,15 @@ declare function parseHumanDraftPick(line: string): PickInfo | null;
  * Parses Quick Draft's pack broadcast. Returns null if this poll isn't
  * actually presenting a new pack to pick from (DraftStatus !== "PickNext").
  */
-declare function parseQuickPack(line: string): PackInfo | null;
+type QuickPackResult = (PackInfo & {
+    eventName?: string;
+    pickedSoFar: string[];
+    completed?: false;
+}) | {
+    completed: true;
+    eventName?: string;
+};
+declare function parseQuickPack(line: string): QuickPackResult | null;
 /**
  * Parses Quick Draft's pick confirmation (the `==>` request side only -- the
  * paired `<==` response confirms success plus the next pack, not the pick
@@ -130,7 +152,6 @@ declare function parseQuickPick(line: string): PickInfo | null;
  */
 declare class DraftScanner {
     draftFormat: "premier" | "quick" | null;
-    draftId: string | null;
     eventName: string | null;
     seenP1P1: boolean;
     currentPack: string[];
@@ -145,8 +166,19 @@ declare class DraftScanner {
         pickNumber: number;
         cards: string[];
     }>;
+    /** Premier's own Draft.Notify draftId, when seen -- preferred over the CourseId lookup. */
+    premierDraftId: string | null;
+    /** Every CourseId seen in the log so far, keyed by InternalEventName -- NOT cleared between
+     *  drafts, since the course-list lines can appear long before the draft itself starts. */
+    courseIdsByEvent: Map<string, string>;
+    draftComplete: boolean;
     constructor();
+    /** Full reset for a restarted Player.log -- also forgets course ids, unlike startDraft(). */
     reset(): void;
+    /** Clears per-draft state for a new draft of `eventName` (or none). */
+    startDraft(eventName: string | null): void;
+    /** The stable id for the current draft -- see the DRAFT ID note in this file's header. */
+    resolveDraftId(): string | null;
     processLines(lines: string[]): DraftEvent[];
     getState(): DraftState;
 }

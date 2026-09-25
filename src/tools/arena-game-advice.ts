@@ -26,6 +26,7 @@ import { LogReader } from "../functions/parsing/log_reader.js";
 import { extractGreEvents, buildMatchTimeline, createMatchState, type MatchState } from "../functions/parsing/gre_match_parser.js";
 import { enrichTimeline } from "../functions/parsing/grpid_resolver.js";
 import { withPersistentGrpIdCache, resolveGrpIdsViaManaramp, resolvePlayerLogPath } from "./shared/arena-local-state.js";
+import { gameCardView } from "./shared/arena-card-view.js";
 import type { ToolDefinition } from "./types.js";
 
 // --- Per-log-path session state -------------------------------------------------------------
@@ -33,11 +34,13 @@ import type { ToolDefinition } from "./types.js";
 // own call), just like the draft tool's own session map -- one reader/state set per path, created
 // on first use and reused after. fullTimeline accumulates every enriched event since the last
 // match-result push (see file header).
-const matchSessions = new Map<string, { reader: LogReader; state: MatchState; fullTimeline: unknown[] }>();
+// shownGrpIds: cards whose text this session has already sent to the model -- see the response
+// comment below.
+const matchSessions = new Map<string, { reader: LogReader; state: MatchState; fullTimeline: unknown[]; shownGrpIds: Set<number> }>();
 
 function getMatchSession(path: string) {
   if (!matchSessions.has(path)) {
-    matchSessions.set(path, { reader: new LogReader(path), state: createMatchState(), fullTimeline: [] });
+    matchSessions.set(path, { reader: new LogReader(path), state: createMatchState(), fullTimeline: [], shownGrpIds: new Set() });
   }
   return matchSessions.get(path)!;
 }
@@ -51,7 +54,7 @@ const arenaDraftGameAdviceTool: ToolDefinition<typeof inputSchema> = {
   description:
     "Read new match/game events from Player.log since the last call and return a turn-by-turn " +
     "timeline (land plays, spells cast, resolves, attacks, damage, life changes, match result) with " +
-    "every card resolved to its real name and oracle text. Requires 'Detailed Logs (Plugin Support)' " +
+    "every card resolved to its real name; each card's text appears once in `cards`, the first time it shows up this session. Requires 'Detailed Logs (Plugin Support)' " +
     "enabled in Arena and a full relaunch after enabling it. Call this again as the game progresses -- " +
     "state for a given player_log_path (including the running instanceId->card map) persists across " +
     "calls, so each call only returns what's new. Only ANNOTATED, CONFIRMED events are reported (an " +
@@ -82,6 +85,7 @@ const arenaDraftGameAdviceTool: ToolDefinition<typeof inputSchema> = {
     if (sessionReset) {
       session.state = createMatchState();
       session.fullTimeline = [];
+      session.shownGrpIds = new Set();
     }
 
     const { events, droppedCount } = extractGreEvents(lines);
@@ -119,16 +123,35 @@ const arenaDraftGameAdviceTool: ToolDefinition<typeof inputSchema> = {
       session.fullTimeline = [];
     }
 
+    // Token-lean output (2026-09-25): every event used to carry the full card record inline (~1,500
+    // tokens each, repeated for every event that touches the same card). Now events carry just the
+    // card NAME, and each card's text goes in `cards` once -- only the first time this session sees
+    // it, since earlier responses are still in the conversation. The pushed game log
+    // (fullTimeline) is unaffected: this only changes the string sent to the model.
+    const newCards: Record<string, ReturnType<typeof gameCardView>> = {};
+    const collectCards = (node: unknown) => {
+      if (Array.isArray(node)) { node.forEach(collectCards); return; }
+      if (!node || typeof node !== "object") return;
+      const obj = node as Record<string, any>;
+      if (obj.grpId != null && obj.card && !session.shownGrpIds.has(obj.grpId)) {
+        session.shownGrpIds.add(obj.grpId);
+        newCards[obj.card.name ?? obj.grpId] = gameCardView(obj.card);
+      }
+      for (const [k, v] of Object.entries(obj)) if (k !== "card") collectCards(v);
+    };
+    collectCards(enrichedTimeline);
+
     return {
       content: [{
         type: "text" as const,
         text: JSON.stringify({
-          session_reset: sessionReset,
-          dropped_summarized_blocks: droppedCount,
+          session_reset: sessionReset || undefined,
+          dropped_summarized_blocks: droppedCount || undefined,
           new_timeline_events: enrichedTimeline,
-          pushed_game_log_id: pushedGameLogId,
-          push_error: pushError,
-        }, null, 2),
+          cards: Object.keys(newCards).length ? newCards : undefined,
+          pushed_game_log_id: pushedGameLogId ?? undefined,
+          push_error: pushError ?? undefined,
+        }, (key, value) => (key === "card" ? (value?.name ?? null) : value)),
       }],
     };
   },

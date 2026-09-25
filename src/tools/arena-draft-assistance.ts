@@ -24,6 +24,7 @@ import { LogReader } from "../functions/parsing/log_reader.js";
 import { DraftScanner } from "../functions/parsing/draft_log_parser.js";
 import { resolveGrpIds } from "../functions/parsing/grpid_resolver.js";
 import { withPersistentGrpIdCache, resolveGrpIdsViaManaramp, resolvePlayerLogPath } from "./shared/arena-local-state.js";
+import { parseEventName, packCardView, poolCardLine } from "./shared/arena-card-view.js";
 import type { ToolDefinition } from "./types.js";
 
 // --- Per-log-path session state -------------------------------------------------------------
@@ -45,44 +46,27 @@ const inputSchema = {
 
 const arenaDraftAssistanceTool: ToolDefinition<typeof inputSchema> = {
   name: "arena_draft_assistance",
+  // Description trimmed 2026-09-25 alongside the response itself (see arena-card-view.ts) --
+  // tool descriptions ride along on every single turn, not just calls to this tool.
   description:
-    "Read the current MTG Arena draft pack from Player.log and resolve every card in it to real " +
-    "card data (name, mana cost, oracle text) for pick advice. Requires 'Detailed Logs (Plugin " +
-    "Support)' enabled in Arena's settings and a full relaunch after enabling it. Call this again " +
-    "after each pick to see the next pack -- offset/state for a given player_log_path persists " +
-    "across calls within this session, so each call only processes what's new since the last one. " +
-    "player_log_path is usually already known: if the user saved it on manaramp.com/mcp-setup, it's " +
-    "fetched from there automatically the first time this runs and cached on disk after that; " +
-    "otherwise whatever was last given in ANY conversation is remembered the same way. Only pass it " +
-    "explicitly if the user gives a different path. If nothing is known at all (never saved on the " +
-    "website, never given before), the response will say so plainly -- point the user at " +
-    "manaramp.com/mcp-setup rather than asking them to paste it into chat every time. " +
-    "Supports Premier and Quick Draft; Traditional Draft and Sealed are not yet implemented (see " +
-    "draft_log_parser.js). picks_made is the full resolved list of every card picked so far this " +
-    "draft (Arena's own log records the actual pick the moment it's made in-client -- you don't need " +
-    "the user to tell you what they picked, it's already here on the next call) -- use it to reason " +
-    "about the emerging pool (colors/archetype signals so far, curve, what's already covered) rather " +
-    "than judging current_pack in isolation. This tool only supplies data, both for the current pack " +
-    "and for pick history -- it does not recommend a pick itself. " +
-    "Every card in current_pack and picks_made gets a format_stats field -- real 17Lands draft/" +
-    "limited data (gih_wr = win rate when actually drawn into hand, 17Lands' own headline 'how good " +
-    "is this card' number; alsa = average pick NUMBER this card was last seen still unpicked in a " +
-    "pack -- NOT the position it was taken at, that's ata -- so low alsa means it's usually gone " +
-    "immediately/highly prized, and a card in your colors sitting in a real pack later than its " +
-    "alsa predicts is a live signal that color is more open at your table than average; iih = " +
-    "Improvement In Hand, how much win rate actually changes when this card shows up vs. when it " +
-    "doesn't, an unweighted difference so a large iih on a small sample can overstate a rare card's " +
-    "value -- check it against gih for sample size; null fields mean too small a sample, not a bad " +
-    "card), pulled directly from manaramp's own database via this account's configured " +
-    "MANARAMP_API_KEY -- as a RAW array of every set+format this card has data for; match " +
-    "set_code/format against event_name/draft_format above yourself, since this tool only supplies " +
-    "data. This draft's picks and pack-options history are also automatically saved to the user's " +
-    "manaramp account on every call (see draft_result_pushed in the response) -- nothing needs to " +
-    "be done to trigger that beyond calling this tool as normal. Use format_stats numbers alongside " +
-    "oracle text when they're present; without a match, fall back to reasoning over real card " +
-    "text/mana costs alone. A card in current_pack/picks_made with card: null failed to resolve -- " +
-    "check unresolved_cards for that grpId's actual failure reason (a real gap in manaramp's card " +
-    "data vs. a transient network error) rather than treating every null the same way.",
+    "Read the current MTG Arena draft pack from Player.log, with each card's real text and 17Lands " +
+    "stats, for pick advice. Requires 'Detailed Logs (Plugin Support)' enabled in Arena and a relaunch " +
+    "after enabling it. Call again after each pick for the next pack; each call only processes what's " +
+    "new in the log. Supports Premier and Quick Draft (not Traditional/Sealed yet). " +
+    "player_log_path is normally already known (saved on manaramp.com/mcp-setup or remembered from an " +
+    "earlier call) -- only pass it if the user gives a different path; if none is known the response " +
+    "says so, and the user should save it on manaramp.com/mcp-setup. " +
+    "current_pack cards carry the 17Lands row for THIS event's set+format: gih_wr = win rate when " +
+    "drawn (the headline quality number), alsa = average pick number it's last seen unpicked (low = " +
+    "usually gone early; a card in your colors seen later than its alsa signals that color is open), " +
+    "ata = average pick it's taken at, iih = win-rate change when in hand, gih_n = sample size (small " +
+    "samples overstate iih). stats_format appears only when stats come from a different format. " +
+    "Missing stats mean too small a sample, not a bad card -- fall back to card text. " +
+    "picks_made is every pick so far as one line each (Arena logs picks itself; the user doesn't need " +
+    "to say what they took) -- use it to judge colors, curve and archetype, not just the pack in " +
+    "isolation. This tool supplies data only; it doesn't recommend a pick. A current_pack entry with " +
+    "card: null failed to resolve -- see unresolved_cards for why. The draft is saved to the user's " +
+    "manaramp account automatically on every call (draft_result_pushed).",
   inputSchema,
   handler: async ({ player_log_path: providedLogPath }) => {
     const player_log_path = await resolvePlayerLogPath(providedLogPath);
@@ -117,12 +101,10 @@ const arenaDraftAssistanceTool: ToolDefinition<typeof inputSchema> = {
       resolveGrpIds([...currentPackIds, ...pickedCardIds], resolveGrpIdsViaManaramp, { cache })
     );
 
-    const resolveOne = (id: string) => {
-      const card = resolved.get(parseInt(id, 10));
-      return card ? { ...card } : { grpId: id, card: null };
-    };
-    const enrichedPack = state.currentPack.map(resolveOne);
-    const picksMade = state.pickedCards.map(resolveOne);
+    const { set, format } = parseEventName(state.eventName);
+    const cardFor = (id: string) => (resolved.get(parseInt(id, 10)) as Record<string, any> | null | undefined) ?? null;
+    const enrichedPack = state.currentPack.map((id) => packCardView(id, cardFor(id), set, format));
+    const picksMade = state.pickedCards.map((id) => poolCardLine(id, cardFor(id), set, format));
 
     // Save this draft's picks/pack-options to the user's manaramp account on every call -- see
     // tools/internal-tools.ts's push_draft_result wrapper (-> functions/push/draft-result.ts).
@@ -157,24 +139,30 @@ const arenaDraftAssistanceTool: ToolDefinition<typeof inputSchema> = {
     return {
       content: [{
         type: "text" as const,
+        // Compact JSON, and no per-call event dump (the first call of a session used to list every
+        // pack in the whole log) -- counts only. See arena-card-view.ts for the size numbers.
         text: JSON.stringify({
-          session_reset: sessionReset,
-          new_events_this_call: events,
-          draft_format: state.draftFormat,
+          session_reset: sessionReset || undefined,
+          draft_id: state.draftId,
           event_name: state.eventName,
+          draft_format: state.draftFormat,
+          draft_complete: state.draftComplete || undefined,
           pack_number: state.currentPackNumber,
           pick_number: state.currentPickNumber,
           current_pack: enrichedPack,
           picks_made: picksMade,
-          picks_made_so_far: picksMade.length,
+          new_this_call: {
+            packs_seen: events.filter((e) => e.kind === "packSeen").length,
+            picks: events.filter((e) => e.kind === "pickMade").length,
+          },
           // Only entries actually looked up THIS call appear here (a cached miss from an earlier
           // call won't re-report its reason -- see grpid_resolver.ts) -- distinguishes a real,
           // permanent gap (e.g. a card genuinely missing arena_grp_ids in manaramp's database)
           // from "not attempted this call," rather than both silently collapsing into `card: null`.
-          unresolved_cards: Array.from(resolveErrors, ([grpId, error]) => ({ grpId, error })),
+          unresolved_cards: resolveErrors.size ? Array.from(resolveErrors, ([grpId, error]) => ({ grpId, error })) : undefined,
           draft_result_pushed: draftResultPushed,
-          draft_result_push_error: draftResultPushError,
-        }, null, 2),
+          draft_result_push_error: draftResultPushError ?? undefined,
+        }),
       }],
     };
   },

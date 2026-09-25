@@ -45,7 +45,10 @@ async function resolveGrpIdsViaManaramp(grpIds) {
   const { callRemoteTool } = await import("./remote-client.js");
   const cards = await callRemoteTool(
     "query_cards",
-    { arena_grp_ids: grpIds }
+    // detail: "full" -- the compact default (2026-09-25) drops arena_grp_ids, which the mapping
+    // below needs, and this cache wants the complete record anyway. Token cost is controlled where
+    // cards are shown to the model instead (see arena-card-view.ts), not here.
+    { arena_grp_ids: grpIds, detail: "full" }
   );
   const byGrpId = /* @__PURE__ */ new Map();
   const wanted = new Set(grpIds);

@@ -6,11 +6,11 @@ const inputSchema = {
 };
 const queryCombosTool = {
   name: "query_combos",
-  description: "Look up documented infinite/powerful combos (Commander Spellbook data) among a set of card names -- use this while researching or assembling a decklist, before or instead of running the full optimize_deck analysis. Not gated on cards being in manaramp's own card database -- a combo can be found even if its pieces are unresolved locally (see unresolved_piece_names on each result: when non-empty, total_cmc is a floor, not a confirmed total, since that piece's real mana cost isn't known here yet).",
+  description: "Look up documented infinite/powerful combos (Commander Spellbook data) among a set of card names -- use this while researching or assembling a decklist, before or instead of running the full validate_and_submit analysis. Not gated on cards being in manaramp's own card database -- a combo can be found even if its pieces are unresolved locally (see unresolved_piece_names on each result: when non-empty, total_cmc is a floor, not a confirmed total, since that piece's real mana cost isn't known here yet).",
   inputSchema,
   handler: async ({ card_names, limit }, ctx) => {
     const combos = await queryCombos(ctx.readDb, card_names, limit);
-    return { content: [{ type: "text", text: JSON.stringify({ combos }, null, 2) }] };
+    return { content: [{ type: "text", text: JSON.stringify({ combos }) }] };
   }
 };
 export {

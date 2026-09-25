@@ -7,7 +7,7 @@ function toRemoteProxy(tool) {
     handler: async (args) => {
       try {
         const result = await callRemoteTool(tool.name, args);
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify(result) }] };
       } catch (e) {
         return { content: [{ type: "text", text: `${tool.name} failed: ${e.message}` }] };
       }

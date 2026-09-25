@@ -29,7 +29,7 @@ function toRemoteProxy<Shape extends ZodRawShape>(tool: ToolDefinition<Shape>): 
     handler: async (args: z.infer<z.ZodObject<Shape>>) => {
       try {
         const result = await callRemoteTool(tool.name, args as Record<string, unknown>);
-        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
       } catch (e: any) {
         return { content: [{ type: "text" as const, text: `${tool.name} failed: ${e.message}` }] };
       }

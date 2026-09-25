@@ -20,7 +20,7 @@ const formatGuidelinesTool = {
           composition_guidance: isCommander ? COMMANDER_COMPOSITION_GUIDANCE : null,
           brackets: isCommander ? brackets : void 0,
           note: isCommander ? void 0 : "No bracket/composition reference exists yet for this format -- this tool set's deck-building logic is Commander-first today."
-        }, null, 2)
+        })
       }]
     };
   }

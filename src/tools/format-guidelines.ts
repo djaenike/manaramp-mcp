@@ -56,7 +56,7 @@ const formatGuidelinesTool: ToolDefinition<typeof inputSchema> = {
           composition_guidance: isCommander ? COMMANDER_COMPOSITION_GUIDANCE : null,
           brackets: isCommander ? brackets : undefined,
           note: isCommander ? undefined : "No bracket/composition reference exists yet for this format -- this tool set's deck-building logic is Commander-first today.",
-        }, null, 2),
+        }),
       }],
     };
   },

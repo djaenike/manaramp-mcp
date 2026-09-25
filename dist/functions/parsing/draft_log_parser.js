@@ -1,11 +1,9 @@
-const DRAFT_START_MARKERS = {
-  eventJoin: "[UnityCrossThreadLogger]==> Event_Join ",
-  botDraftStatus: "[UnityCrossThreadLogger]==> BotDraft_DraftStatus "
-};
+const EVENT_JOIN_MARKERS = ["==> Event_Join ", "==> EventJoin "];
+const BOT_DRAFT_STATUS_MARKERS = ["==> BotDraft_DraftStatus ", "==> BotDraftDraftStatus "];
+const COURSE_ID_PATTERN = /"CourseId":"([^"]+)","InternalEventName":"([^"]+)"/g;
 const PREMIER_PACK_MARKER = "[UnityCrossThreadLogger]Draft.Notify ";
 const PREMIER_P1P1_MARKER = "CardsInPack";
 const HUMAN_PICK_EVENT = "EventPlayerDraftMakePick";
-const QUICK_PACK_MARKER = "DraftPack";
 const QUICK_PICK_EVENT_FORMS = ["BotDraftDraftPick", "BotDraft_DraftPick"];
 function lineHasQuickPickEvent(line) {
   return QUICK_PICK_EVENT_FORMS.some((form) => line.includes(form));
@@ -21,23 +19,28 @@ function safeJsonAfter(line, anchor) {
 }
 function detectDraftStart(lines) {
   for (const line of lines) {
-    let eventData = null;
-    if (line.includes(DRAFT_START_MARKERS.eventJoin)) {
-      eventData = safeJsonAfter(line, '{"id"') || safeJsonAfter(line, "{");
-    } else if (line.includes(DRAFT_START_MARKERS.botDraftStatus)) {
-      eventData = safeJsonAfter(line, '{"id"') || safeJsonAfter(line, "{");
-    }
-    if (!eventData) continue;
+    const isJoin = EVENT_JOIN_MARKERS.some((m) => line.includes(m));
+    if (!isJoin && !BOT_DRAFT_STATUS_MARKERS.some((m) => line.includes(m))) continue;
+    const eventData = safeJsonAfter(line, '{"id"') || safeJsonAfter(line, "{");
+    if (!eventData || typeof eventData.request !== "string") continue;
     try {
       const request = JSON.parse(eventData.request);
-      const payload = JSON.parse(request.Payload);
-      if (payload.EventName) {
-        return { draftId: eventData.id, eventName: payload.EventName };
+      const payload = typeof request.Payload === "string" ? JSON.parse(request.Payload) : request;
+      if (typeof payload.EventName === "string" && /draft/i.test(payload.EventName)) {
+        return { eventName: payload.EventName, isJoin };
       }
     } catch {
     }
   }
   return null;
+}
+function fnv1a(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
 }
 function parsePremierP1P1(line) {
   const data = safeJsonAfter(line, '{"id":');
@@ -102,11 +105,16 @@ function parseQuickPack(line) {
   try {
     const data = JSON.parse(line.slice(idx));
     const payload = JSON.parse(data.Payload);
+    if (payload.DraftStatus === "Completed") return { completed: true, eventName: payload.EventName };
     if (payload.DraftStatus !== "PickNext") return null;
     return {
+      eventName: payload.EventName,
       packNumber: payload.PackNumber + 1,
       pickNumber: payload.PickNumber + 1,
-      cards: (payload.DraftPack || []).map(String)
+      cards: (payload.DraftPack || []).map(String),
+      // Arena's own running list of everything picked so far (not in pick order) -- only used to
+      // seed pickedCards when this scanner joined mid-draft and never saw the earlier picks.
+      pickedSoFar: (payload.PickedCards || []).map(String)
     };
   } catch {
     return null;
@@ -133,7 +141,6 @@ function parseQuickPick(line) {
 }
 class DraftScanner {
   draftFormat;
-  draftId;
   eventName;
   seenP1P1;
   currentPack;
@@ -144,9 +151,15 @@ class DraftScanner {
    *  pack), this accumulates so push_draft_result can save the FULL options history, not just
    *  whatever's showing right now. */
   packsSeen;
+  /** Premier's own Draft.Notify draftId, when seen -- preferred over the CourseId lookup. */
+  premierDraftId;
+  /** Every CourseId seen in the log so far, keyed by InternalEventName -- NOT cleared between
+   *  drafts, since the course-list lines can appear long before the draft itself starts. */
+  courseIdsByEvent;
+  draftComplete;
   constructor() {
+    this.courseIdsByEvent = /* @__PURE__ */ new Map();
     this.draftFormat = null;
-    this.draftId = null;
     this.eventName = null;
     this.seenP1P1 = false;
     this.currentPack = [];
@@ -154,29 +167,49 @@ class DraftScanner {
     this.currentPickNumber = 0;
     this.pickedCards = [];
     this.packsSeen = [];
+    this.premierDraftId = null;
+    this.draftComplete = false;
   }
+  /** Full reset for a restarted Player.log -- also forgets course ids, unlike startDraft(). */
   reset() {
-    this.draftFormat = null;
-    this.draftId = null;
-    this.eventName = null;
+    this.courseIdsByEvent = /* @__PURE__ */ new Map();
+    this.startDraft(null);
+  }
+  /** Clears per-draft state for a new draft of `eventName` (or none). */
+  startDraft(eventName) {
+    this.draftFormat = eventName ? /quick/i.test(eventName) ? "quick" : "premier" : null;
+    this.eventName = eventName;
     this.seenP1P1 = false;
     this.currentPack = [];
     this.currentPackNumber = 0;
     this.currentPickNumber = 0;
     this.pickedCards = [];
     this.packsSeen = [];
+    this.premierDraftId = null;
+    this.draftComplete = false;
+  }
+  /** The stable id for the current draft -- see the DRAFT ID note in this file's header. */
+  resolveDraftId() {
+    if (this.premierDraftId) return this.premierDraftId;
+    if (!this.eventName) return null;
+    const courseId = this.courseIdsByEvent.get(this.eventName);
+    if (courseId) return courseId;
+    const firstPack = this.packsSeen[0];
+    return firstPack ? `${this.eventName}:${fnv1a(firstPack.cards.join(","))}` : null;
   }
   processLines(lines) {
     const events = [];
     for (const line of lines) {
-      if (line.includes(DRAFT_START_MARKERS.eventJoin) || line.includes(DRAFT_START_MARKERS.botDraftStatus)) {
+      if (line.includes('"CourseId"')) {
+        for (const m of line.matchAll(COURSE_ID_PATTERN)) this.courseIdsByEvent.set(m[2], m[1]);
+      }
+      if (EVENT_JOIN_MARKERS.some((m) => line.includes(m)) || BOT_DRAFT_STATUS_MARKERS.some((m) => line.includes(m))) {
         const start = detectDraftStart([line]);
         if (start) {
-          this.reset();
-          this.draftId = start.draftId;
-          this.eventName = start.eventName;
-          this.draftFormat = /quick/i.test(start.eventName) ? "quick" : "premier";
-          events.push({ kind: "draftStart", draftId: start.draftId, eventName: start.eventName });
+          if (start.isJoin || start.eventName !== this.eventName) {
+            this.startDraft(start.eventName);
+            events.push({ kind: "draftStart", eventName: start.eventName });
+          }
           continue;
         }
       }
@@ -195,6 +228,7 @@ class DraftScanner {
       if (line.includes(PREMIER_PACK_MARKER)) {
         const pack = parsePremierPack(line);
         if (pack) {
+          if (pack.draftId) this.premierDraftId = pack.draftId;
           this.currentPack = pack.cards;
           this.currentPackNumber = pack.packNumber;
           this.currentPickNumber = pack.pickNumber;
@@ -211,14 +245,24 @@ class DraftScanner {
           continue;
         }
       }
-      if (line.includes(QUICK_PACK_MARKER)) {
+      if (line.includes('{"CurrentModule"') && line.includes("DraftStatus")) {
         const pack = parseQuickPack(line);
+        if (pack?.eventName && pack.eventName !== this.eventName) {
+          this.startDraft(pack.eventName);
+          events.push({ kind: "draftStart", eventName: pack.eventName });
+        }
+        if (pack?.completed) {
+          this.draftComplete = true;
+          this.currentPack = [];
+          continue;
+        }
         if (pack) {
+          if (this.pickedCards.length === 0 && pack.pickedSoFar.length > 0) this.pickedCards = [...pack.pickedSoFar];
           this.currentPack = pack.cards;
           this.currentPackNumber = pack.packNumber;
           this.currentPickNumber = pack.pickNumber;
           this.packsSeen.push({ packNumber: pack.packNumber, pickNumber: pack.pickNumber, cards: pack.cards });
-          events.push({ kind: "packSeen", ...pack });
+          events.push({ kind: "packSeen", packNumber: pack.packNumber, pickNumber: pack.pickNumber, cards: pack.cards });
           continue;
         }
       }
@@ -236,13 +280,14 @@ class DraftScanner {
   getState() {
     return {
       draftFormat: this.draftFormat,
-      draftId: this.draftId,
+      draftId: this.resolveDraftId(),
       eventName: this.eventName,
       currentPack: this.currentPack,
       currentPackNumber: this.currentPackNumber,
       currentPickNumber: this.currentPickNumber,
       pickedCards: this.pickedCards,
-      packsSeen: this.packsSeen
+      packsSeen: this.packsSeen,
+      draftComplete: this.draftComplete
     };
   }
 }

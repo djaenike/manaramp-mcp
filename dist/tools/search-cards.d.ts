@@ -47,6 +47,7 @@ declare const inputSchema: {
         value_contains: string;
     }>>;
     limit: z.ZodOptional<z.ZodNumber>;
+    detail: z.ZodOptional<z.ZodEnum<["summary", "full"]>>;
 };
 declare const queryCardsTool: ToolDefinition<typeof inputSchema>;
 

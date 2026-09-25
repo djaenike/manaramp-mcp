@@ -3,7 +3,7 @@ import { getDeckDoc } from "../functions/query/decks.js";
 import { pushDeck } from "../functions/push/deck.js";
 import { analyzeDecklist, extractBracketNumber } from "./shared/deck-analysis.js";
 const inputSchema = {
-  decklist_text: z.string().describe("A fully-assembled decklist ('Commander' section, blank line, 'Deck' section, one '<qty> <name>' per line). Look up real card names first via search_cards/query_combos/query_synergies rather than guessing; not_found in this tool's response flags anything unresolved so you can fix spelling or swap the card before calling again."),
+  decklist_text: z.string().describe("A fully-assembled decklist ('Commander' section, blank line, 'Deck' section, one '<qty> <name>' per line). Look up real card names first via query_cards/query_combos/query_synergies rather than guessing; not_found in this tool's response flags anything unresolved so you can fix spelling or swap the card before calling again."),
   submit: z.boolean().optional().describe("Default false: validate/analyze only, nothing persisted -- call this as many times as needed while assembling or tweaking the decklist. true: persist this as the FINAL decklist (requires deck_name/wincon_summary/general_strategy) and return a real manaramp.com/decks/<slug> link -- call this once, not on every tweak."),
   deck_id: z.string().optional().describe("Only meaningful with submit:true. Pass the deck_id read_deck or a previous submit:true call returned to update that exact deck in place instead of creating a new one. Must belong to the calling account."),
   deck_name: z.string().optional().describe("Required when submit:true. The deck's name/theme, e.g. 'Edgar Markov Vampire Tribal'."),
@@ -101,7 +101,7 @@ const validateAndSubmitTool = {
           mana_curve: consistency.mana_curve,
           curve_out_probability: consistency.curve_out_probability,
           total_cards: totalCards
-        }, null, 2)
+        })
       }]
     };
   }
