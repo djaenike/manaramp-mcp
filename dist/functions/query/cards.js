@@ -154,6 +154,9 @@ async function queryCards(db, filters, priceSource = "cardkingdom", preferredPri
   if (filters.name_contains) {
     query.name = { $regex: filters.name_contains, $options: "i" };
   }
+  if (filters.type_line_contains) {
+    query.type_line = { $regex: escapeRegex(filters.type_line_contains), $options: "i" };
+  }
   if (filters.color_identity_subset_of) {
     query.color_identity = { $not: { $elemMatch: { $nin: filters.color_identity_subset_of } } };
   }
@@ -194,6 +197,9 @@ async function queryCards(db, filters, priceSource = "cardkingdom", preferredPri
       effectMatch.result = { $elemMatch: stepMatch };
     }
     query.effects = { $elemMatch: effectMatch };
+  }
+  if (filters.effects_all?.length) {
+    query["effects.result.effect"] = { $all: filters.effects_all };
   }
   const docs = await db.collection("cards").find(query).limit(Math.min(filters.limit ?? 25, 100)).toArray();
   return finalize(db, docs, priceSource, pinned, preferredPrinting);

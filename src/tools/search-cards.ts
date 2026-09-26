@@ -95,11 +95,14 @@ function toCompact(c: CardSummary): CompactCard {
   return out;
 }
 
-const inputSchema = {
+// Every filter a single search takes -- shared by the top-level (one search) form and each entry of
+// `searches` (many at once), so the two can never drift apart.
+const filterFields = {
   names: z.array(z.string()).optional().describe("Exact (case-insensitive) name batch lookup. Takes precedence over every filter below."),
   oracle_ids: z.array(z.string()).optional().describe("Batch lookup by the `cards` collection's own _id. Same priority as names."),
   arena_grp_ids: z.array(z.number()).optional().describe("Arena's numeric grpIds -- batch lookup. Same priority as names/oracle_ids."),
   name_contains: z.string().optional().describe("Substring search against card names, case-insensitive."),
+  type_line_contains: z.string().optional().describe("Substring of the type line, case-insensitive -- e.g. 'Legendary Creature', 'Elf', 'Equipment'."),
   color_identity_subset_of: z.array(z.string()).optional().describe("Cards whose color_identity is a SUBSET of this list -- the standard 'legal to include under this commander' filter, e.g. ['W','U','B'] for an Esper commander."),
   colors_include: z.array(z.string()).optional().describe("Cards whose `colors` array includes ALL of these."),
   category: z.string().optional().describe("e.g. 'Creature', 'Instant', 'Land', 'Artifact', 'Planeswalker', 'Other'."),
@@ -145,7 +148,32 @@ const inputSchema = {
         "\"Opponent\", scripts vary). Only one key/value pair per call -- run two queries and intersect results if you " +
         "need two conditions on the same step.",
     ),
+  effects_all: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Card must have EVERY one of these Forge effect names somewhere in its abilities (AND) -- e.g. [\"Draw\", \"Mana\"] " +
+        "for cards that both draw and make mana. effect_in is any-of within one ability; use this when a single card must " +
+        "do several things. Combine freely with every other filter in the same search.",
+    ),
   limit: z.number().optional().describe("Max results (default 25, capped at 100). Ignored for names/oracle_ids/arena_grp_ids batch lookups."),
+};
+
+const MAX_SEARCHES = 10;
+
+const inputSchema = {
+  ...filterFields,
+  searches: z
+    .array(z.object({ label: z.string().optional().describe("Name for this search's result list, e.g. 'ramp'."), ...filterFields }))
+    .max(MAX_SEARCHES)
+    .optional()
+    .describe(
+      `Run up to ${MAX_SEARCHES} searches in ONE call (2026-09-26) -- e.g. ramp, card draw, removal and lands for a ` +
+        "deck, each its own entry with its own filters (every filter above is valid inside each entry; filters within an " +
+        "entry are AND-ed). Strongly preferred over separate calls: each extra call re-sends the whole conversation. " +
+        "Response: { results: { <label>: [card names] }, cards: { <name>: card } } -- a card matching several searches " +
+        "is listed under each label but described once. Top-level filters are ignored when searches is given.",
+    ),
   detail: z
     .enum(["summary", "full"])
     .optional()
@@ -168,7 +196,9 @@ const queryCardsTool: ToolDefinition<typeof inputSchema> = {
     "card choices in what's actually here rather than guessing, then feed the assembled decklist " +
     "into validate_and_submit. A result with no effect_names means this card genuinely has no " +
     "scripted ability (a vanilla creature, a basic land) -- confirmed, not unclassified. Legality: " +
-    "filter with legal_in rather than reading it off results (the per-format map is only in detail: 'full').",
+    "filter with legal_in rather than reading it off results (the per-format map is only in detail: 'full'). " +
+    "When you need several kinds of cards (ramp, draw, removal, lands...), put them all in ONE call via `searches` " +
+    "rather than one call each.",
   inputSchema,
   handler: async (args, ctx) => {
     // Falls back to 'cardkingdom'/'most_recent' for a legacy account with no preference saved yet,
@@ -176,10 +206,28 @@ const queryCardsTool: ToolDefinition<typeof inputSchema> = {
     // McpContext.
     const priceSource = (await ctx.getPriceSourcePreference?.()) ?? "cardkingdom";
     const preferredPrinting = (await ctx.getPreferredPrintingPreference?.()) ?? "most_recent";
-    const { detail, ...filters } = args;
-    const cards = await queryCards(ctx.readDb, filters, priceSource, preferredPrinting);
-    const body = detail === "full" ? cards : cards.map(toCompact);
-    return { content: [{ type: "text" as const, text: JSON.stringify(body) }] };
+    const { detail, searches, ...filters } = args;
+    const shape = (c: CardSummary) => (detail === "full" ? c : toCompact(c));
+
+    if (!searches?.length) {
+      const cards = await queryCards(ctx.readDb, filters, priceSource, preferredPrinting);
+      return { content: [{ type: "text" as const, text: JSON.stringify(cards.map(shape)) }] };
+    }
+
+    // Batched form -- every search runs in parallel on the same Db, one tool round trip total.
+    // Cards are keyed by name and described once, however many searches they matched.
+    const lists = await Promise.all(
+      searches.map(({ label: _label, ...f }) => queryCards(ctx.readDb, f, priceSource, preferredPrinting)),
+    );
+    const results: Record<string, string[]> = {};
+    const cards: Record<string, unknown> = {};
+    searches.forEach((search, i) => {
+      let label = search.label?.trim() || `search_${i + 1}`;
+      while (label in results) label = `${label}_${i + 1}`;
+      results[label] = lists[i].map((c) => c.name);
+      for (const c of lists[i]) cards[c.name] ??= shape(c);
+    });
+    return { content: [{ type: "text" as const, text: JSON.stringify({ results, cards }) }] };
   },
 };
 

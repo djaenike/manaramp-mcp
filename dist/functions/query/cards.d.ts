@@ -211,6 +211,8 @@ interface QueryCardsFilters {
      *  A card can have several (one per Arena printing). Same priority as `names`/`oracle_ids`. */
     arena_grp_ids?: number[];
     name_contains?: string;
+    /** Substring of the type line, case-insensitive -- "Legendary Creature", "Elf", "Equipment". */
+    type_line_contains?: string;
     /** Cards whose color_identity is a SUBSET of this list -- the standard "legal to include under
      *  this commander" filter. Omit for no color-identity restriction. */
     color_identity_subset_of?: string[];
@@ -246,6 +248,11 @@ interface QueryCardsFilters {
      *  ["DealDamage"], effect_param_contains: {key: "ValidTgts", value_contains: "Player"} (also try
      *  "Opponent" -- Forge scripts vary). */
     effect_param_contains?: EffectParamContains;
+    /** Cards that have EVERY one of these effect names somewhere in their abilities (AND), unlike
+     *  effect_in's any-of -- e.g. ["Draw", "Mana"] for a card that both draws and makes mana, in one
+     *  query instead of intersecting two (2026-09-26). Independent of effect_in/trigger_kind: those
+     *  still constrain a single ability, this checks the card as a whole. */
+    effects_all?: string[];
     /** oracle_id -> scryfall_id, for pricing/imagery a SPECIFIC printing instead of the default
      *  (most-recent-release) one -- e.g. deck-analysis.ts pricing a deck whose owner pinned a printing
      *  for some cards (see manaramp's schema/decks.ts printing_preferences). Only affects which

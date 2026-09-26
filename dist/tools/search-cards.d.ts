@@ -22,10 +22,88 @@ import 'mongodb';
  */
 
 declare const inputSchema: {
+    searches: z.ZodOptional<z.ZodArray<z.ZodObject<{
+        names: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
+        oracle_ids: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
+        arena_grp_ids: z.ZodOptional<z.ZodArray<z.ZodNumber, "many">>;
+        name_contains: z.ZodOptional<z.ZodString>;
+        type_line_contains: z.ZodOptional<z.ZodString>;
+        color_identity_subset_of: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
+        colors_include: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
+        category: z.ZodOptional<z.ZodString>;
+        cmc_min: z.ZodOptional<z.ZodNumber>;
+        cmc_max: z.ZodOptional<z.ZodNumber>;
+        oracle_text_contains: z.ZodOptional<z.ZodString>;
+        legal_in: z.ZodOptional<z.ZodString>;
+        max_price_usd: z.ZodOptional<z.ZodNumber>;
+        effect_in: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
+        trigger_kind: z.ZodOptional<z.ZodEnum<["cast", "activate", "triggered", "static", "replacement"]>>;
+        effect_param_contains: z.ZodOptional<z.ZodObject<{
+            key: z.ZodString;
+            value_contains: z.ZodString;
+        }, "strip", z.ZodTypeAny, {
+            key: string;
+            value_contains: string;
+        }, {
+            key: string;
+            value_contains: string;
+        }>>;
+        effects_all: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
+        limit: z.ZodOptional<z.ZodNumber>;
+        label: z.ZodOptional<z.ZodString>;
+    }, "strip", z.ZodTypeAny, {
+        category?: string | undefined;
+        arena_grp_ids?: number[] | undefined;
+        oracle_ids?: string[] | undefined;
+        label?: string | undefined;
+        names?: string[] | undefined;
+        name_contains?: string | undefined;
+        type_line_contains?: string | undefined;
+        color_identity_subset_of?: string[] | undefined;
+        colors_include?: string[] | undefined;
+        cmc_min?: number | undefined;
+        cmc_max?: number | undefined;
+        oracle_text_contains?: string | undefined;
+        legal_in?: string | undefined;
+        max_price_usd?: number | undefined;
+        effect_in?: string[] | undefined;
+        trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
+        effect_param_contains?: {
+            key: string;
+            value_contains: string;
+        } | undefined;
+        effects_all?: string[] | undefined;
+        limit?: number | undefined;
+    }, {
+        category?: string | undefined;
+        arena_grp_ids?: number[] | undefined;
+        oracle_ids?: string[] | undefined;
+        label?: string | undefined;
+        names?: string[] | undefined;
+        name_contains?: string | undefined;
+        type_line_contains?: string | undefined;
+        color_identity_subset_of?: string[] | undefined;
+        colors_include?: string[] | undefined;
+        cmc_min?: number | undefined;
+        cmc_max?: number | undefined;
+        oracle_text_contains?: string | undefined;
+        legal_in?: string | undefined;
+        max_price_usd?: number | undefined;
+        effect_in?: string[] | undefined;
+        trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
+        effect_param_contains?: {
+            key: string;
+            value_contains: string;
+        } | undefined;
+        effects_all?: string[] | undefined;
+        limit?: number | undefined;
+    }>, "many">>;
+    detail: z.ZodOptional<z.ZodEnum<["summary", "full"]>>;
     names: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     oracle_ids: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     arena_grp_ids: z.ZodOptional<z.ZodArray<z.ZodNumber, "many">>;
     name_contains: z.ZodOptional<z.ZodString>;
+    type_line_contains: z.ZodOptional<z.ZodString>;
     color_identity_subset_of: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     colors_include: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     category: z.ZodOptional<z.ZodString>;
@@ -46,8 +124,8 @@ declare const inputSchema: {
         key: string;
         value_contains: string;
     }>>;
+    effects_all: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     limit: z.ZodOptional<z.ZodNumber>;
-    detail: z.ZodOptional<z.ZodEnum<["summary", "full"]>>;
 };
 declare const queryCardsTool: ToolDefinition<typeof inputSchema>;
 
