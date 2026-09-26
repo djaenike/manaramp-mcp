@@ -24,7 +24,7 @@ import { LogReader } from "../functions/parsing/log_reader.js";
 import { DraftScanner } from "../functions/parsing/draft_log_parser.js";
 import { resolveGrpIds } from "../functions/parsing/grpid_resolver.js";
 import { withPersistentGrpIdCache, resolveGrpIdsViaManaramp, resolvePlayerLogPath } from "./shared/arena-local-state.js";
-import { parseEventName, packCardView, poolCardLine } from "./shared/arena-card-view.js";
+import { parseEventName, packCardView, sortPackForPicking, poolSummary, poolCardLine } from "./shared/arena-card-view.js";
 import type { ToolDefinition } from "./types.js";
 
 // --- Per-log-path session state -------------------------------------------------------------
@@ -56,17 +56,27 @@ const arenaDraftAssistanceTool: ToolDefinition<typeof inputSchema> = {
     "player_log_path is normally already known (saved on manaramp.com/mcp-setup or remembered from an " +
     "earlier call) -- only pass it if the user gives a different path; if none is known the response " +
     "says so, and the user should save it on manaramp.com/mcp-setup. " +
-    "current_pack cards carry the 17Lands row for THIS event's set+format: gih_wr = win rate when " +
-    "drawn (the headline quality number), alsa = average pick number it's last seen unpicked (low = " +
-    "usually gone early; a card in your colors seen later than its alsa signals that color is open), " +
-    "ata = average pick it's taken at, iih = win-rate change when in hand, gih_n = sample size (small " +
-    "samples overstate iih). stats_format appears only when stats come from a different format. " +
-    "Missing stats mean too small a sample, not a bad card -- fall back to card text. " +
-    "picks_made is every pick so far as one line each (Arena logs picks itself; the user doesn't need " +
-    "to say what they took) -- use it to judge colors, curve and archetype, not just the pack in " +
-    "isolation. This tool supplies data only; it doesn't recommend a pick. A current_pack entry with " +
-    "card: null failed to resolve -- see unresolved_cards for why. The draft is saved to the user's " +
-    "manaramp account automatically on every call (draft_result_pushed).",
+    "current_pack cards carry the 17Lands row for THIS event's set+format: gih_wr = games-in-hand win " +
+    "rate, alsa = average pick number it's last seen unpicked (low = usually gone early), ata = average " +
+    "pick it's taken at, iih = win-rate change when in hand, gih_n = sample size. stats_format appears " +
+    "only when stats come from a different format. current_pack is already sorted best-first by " +
+    "gih_wr, then (for cards 17Lands has no gih_wr for -- it withholds it below its sample threshold, " +
+    "common early in a set; that's not a bad card) by alsa. " +
+    "HOW TO RECOMMEND A PICK: (1) gih_wr is the primary ranking -- start from the top of current_pack. " +
+    "Without gih_wr, use alsa and the card's own text. (2) Weigh it against pool_summary (the picks so " +
+    "far: colors with card counts and avg gih_wr, leading_colors, curve, creatures/noncreatures, and " +
+    "roles: removal/card_advantage/tokens). Early in pack 1, take the strongest card almost regardless " +
+    "of color; once leading_colors is established (roughly mid pack 1 onward), prefer a slightly lower " +
+    "gih_wr card in those colors over a higher one off-color, and favor what the pool is short on " +
+    "(removal, 2-drops, enough creatures -- ~15 by the end). (3) Recommend a PIVOT, explicitly, when " +
+    "the evidence supports it: strong cards in another color keep arriving with seen_late: true (still " +
+    "here more than a pick past their alsa, a sign that color is open at this table), and that color's " +
+    "quality beats your weaker leading color's avg_gih_wr, while there are still picks left to build it " +
+    "-- say which color to move into and what to drop. Give the pick, a one-line reason, and the " +
+    "runner-up. picks_made lists every pick so far (Arena logs picks itself; the user doesn't need to " +
+    "say what they took). A current_pack entry with card: null failed to resolve -- see " +
+    "unresolved_cards. The draft is saved to the user's manaramp account automatically on every call " +
+    "(draft_result_pushed).",
   inputSchema,
   handler: async ({ player_log_path: providedLogPath }) => {
     const player_log_path = await resolvePlayerLogPath(providedLogPath);
@@ -103,8 +113,14 @@ const arenaDraftAssistanceTool: ToolDefinition<typeof inputSchema> = {
 
     const { set, format } = parseEventName(state.eventName);
     const cardFor = (id: string) => (resolved.get(parseInt(id, 10)) as Record<string, any> | null | undefined) ?? null;
-    const enrichedPack = state.currentPack.map((id) => packCardView(id, cardFor(id), set, format));
+    // Pack pre-ranked by GIH WR (see sortPackForPicking) and the pool pre-summarized (colors, curve,
+    // roles) -- 2026-09-26, so the pick-priority rules in this tool's description have the numbers
+    // they reference sitting right there instead of being re-derived from raw lists every pick.
+    const enrichedPack = sortPackForPicking(
+      state.currentPack.map((id) => packCardView(id, cardFor(id), set, format, state.currentPickNumber))
+    );
     const picksMade = state.pickedCards.map((id) => poolCardLine(id, cardFor(id), set, format));
+    const pool = poolSummary(state.pickedCards.map(cardFor), set, format);
 
     // Save this draft's picks/pack-options to the user's manaramp account on every call -- see
     // tools/internal-tools.ts's push_draft_result wrapper (-> functions/push/draft-result.ts).
@@ -150,6 +166,7 @@ const arenaDraftAssistanceTool: ToolDefinition<typeof inputSchema> = {
           pack_number: state.currentPackNumber,
           pick_number: state.currentPickNumber,
           current_pack: enrichedPack,
+          pool_summary: pool,
           picks_made: picksMade,
           new_this_call: {
             packs_seen: events.filter((e) => e.kind === "packSeen").length,
