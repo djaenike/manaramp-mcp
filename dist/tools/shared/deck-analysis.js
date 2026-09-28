@@ -22,9 +22,8 @@ async function analyzeDecklist(readDb, decklist_text, priceSource = "cardkingdom
   }
   for (const entry of deckEntries) {
     const p = priceByNameLower.get(entry.name.toLowerCase());
-    if (p == null) {
-      for (let i = 0; i < entry.qty; i++) cardsNotPriced.push(entry.name);
-    } else priceTotal += p * entry.qty;
+    if (p == null) cardsNotPriced.push(entry.qty > 1 ? `${entry.name} x${entry.qty}` : entry.name);
+    else priceTotal += p * entry.qty;
   }
   priceTotal = Math.round(priceTotal * 100) / 100;
   const totalCards = commanderNames.length + deckEntries.reduce((s, e) => s + e.qty, 0);
@@ -34,7 +33,11 @@ function extractBracketNumber(s) {
   const m = String(s ?? "").match(/\d+/);
   return m ? m[0] : null;
 }
+function toDecklistText(commanderNames, entries) {
+  return ["Commander", ...commanderNames.map((n) => `1 ${n}`), "", "Deck", ...entries.filter((e) => e.qty > 0).map((e) => `${e.qty} ${e.name}`)].join("\n");
+}
 export {
   analyzeDecklist,
-  extractBracketNumber
+  extractBracketNumber,
+  toDecklistText
 };

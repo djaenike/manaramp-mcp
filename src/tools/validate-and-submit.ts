@@ -31,11 +31,18 @@
 import { z } from "zod";
 import { getDeckDoc, type DeckDoc } from "../functions/query/decks.js";
 import { pushDeck } from "../functions/push/deck.js";
-import { analyzeDecklist, extractBracketNumber } from "./shared/deck-analysis.js";
+import { analyzeDecklist, extractBracketNumber, toDecklistText } from "./shared/deck-analysis.js";
+import { getDraft } from "../functions/push/deck-drafts.js";
+import { markPromptBuilt, type DeckPromptConstraints } from "../functions/query/deck-prompts.js";
 import type { ToolDefinition } from "./types.js";
 
 const inputSchema = {
-  decklist_text: z.string().describe("A fully-assembled decklist ('Commander' section, blank line, 'Deck' section, one '<qty> <name>' per line). Look up real card names first via query_cards/query_combos/query_synergies rather than guessing; not_found in this tool's response flags anything unresolved so you can fix spelling or swap the card before calling again."),
+  draft_id: z.string().optional().describe("The draft_id fill_deck_plan returned -- submit that server-held list (plus `swaps`) instead of typing a decklist. Preferred whenever you have one."),
+  swaps: z
+    .array(z.object({ out: z.string().optional().describe("Card name to remove from the draft."), in: z.string().optional().describe("Card name to add (an alternate, or any real card).") }))
+    .optional()
+    .describe("Changes to the draft before validating: { out, in } replaces (the new card takes the old one's quantity), out alone removes, in alone adds 1."),
+  decklist_text: z.string().optional().describe("A fully-assembled decklist ('Commander' section, blank line, 'Deck' section, one '<qty> <name>' per line). Look up real card names first via query_cards/query_combos/query_synergies rather than guessing; not_found in this tool's response flags anything unresolved so you can fix spelling or swap the card before calling again."),
   submit: z.boolean().optional().describe("Default false: validate/analyze only, nothing persisted -- call this as many times as needed while assembling or tweaking the decklist. true: persist this as the FINAL decklist (requires deck_name/wincon_summary/general_strategy) and return a real manaramp.com/decks/<slug> link -- call this once, not on every tweak."),
   deck_id: z.string().optional().describe("Only meaningful with submit:true. Pass the deck_id read_deck or a previous submit:true call returned to update that exact deck in place instead of creating a new one. Must belong to the calling account."),
   deck_name: z.string().optional().describe("Required when submit:true. The deck's name/theme, e.g. 'Edgar Markov Vampire Tribal'."),
@@ -51,6 +58,8 @@ const validateAndSubmitTool: ToolDefinition<typeof inputSchema> = {
   name: "validate_and_submit",
   description:
     "Check a decklist -- consistency (card count, singleton, color identity, Commander legality), " +
+    "mana curve, price and per-card facts -- and, with submit:true, save it. After fill_deck_plan, pass " +
+    "its draft_id plus any swaps (never retype the list) and submit:true in ONE call. Details: " +
     "mana curve, curve-out probability, price, and real per-card facts (game_changers_found/" +
     "mass_land_denial_found/extra_turns_found/combos_found/tutors_found/land_ramp_found/" +
     "extra_land_drops_found/token_generators_found/counterspells_found/recursion_found/" +
@@ -65,9 +74,46 @@ const validateAndSubmitTool: ToolDefinition<typeof inputSchema> = {
     "same deck_id.",
   inputSchema,
   handler: async (
-    { decklist_text, submit, deck_id, deck_name, deck_type, bracket_estimate, bracket_level_requested, is_public, wincon_summary, general_strategy },
+    { draft_id, swaps, decklist_text: decklistTextArg, submit, deck_id, deck_name: deckNameArg, deck_type: deckTypeArg, bracket_estimate, bracket_level_requested, is_public, wincon_summary, general_strategy },
     ctx
   ) => {
+    // draft_id path (2026-09-27): the list comes from fill_deck_plan's stored draft plus swaps, so the
+    // model never retypes ~100 lines. Same analysis as a pasted decklist from here on.
+    let decklist_text = decklistTextArg;
+    let deck_name = deckNameArg;
+    let deck_type = deckTypeArg;
+    let promptId: string | null = null;
+    let draftConstraints: DeckPromptConstraints | null = null;
+    const swapNotes: string[] = [];
+    if (draft_id) {
+      const draft = await getDraft(ctx.writeDb, draft_id, ctx.ownerUserId);
+      if (!draft) return { content: [{ type: "text" as const, text: `No draft '${draft_id}' for this account (drafts expire after 7 days) -- run fill_deck_plan again.` }] };
+      const entries = new Map<string, { name: string; qty: number }>();
+      for (const e of [...draft.slots.flatMap((sl) => sl.picks), ...draft.basics]) {
+        const key = e.name.toLowerCase();
+        entries.set(key, { name: e.name, qty: (entries.get(key)?.qty ?? 0) + e.qty });
+      }
+      for (const sw of swaps ?? []) {
+        let qty = 1;
+        if (sw.out) {
+          const hit = entries.get(sw.out.toLowerCase());
+          if (hit) { qty = hit.qty; entries.delete(sw.out.toLowerCase()); } else swapNotes.push(`'${sw.out}' wasn't in the draft -- nothing removed`);
+        }
+        if (sw.in) {
+          const key = sw.in.toLowerCase();
+          entries.set(key, { name: entries.get(key)?.name ?? sw.in, qty: (entries.get(key)?.qty ?? 0) + qty });
+        }
+      }
+      decklist_text = toDecklistText(draft.commander ? [draft.commander.name] : [], [...entries.values()]);
+      deck_name ??= draft.deck_name ?? undefined;
+      deck_type ??= draft.format;
+      promptId = draft.prompt_id;
+      draftConstraints = draft.constraints;
+    }
+    if (!decklist_text) {
+      return { content: [{ type: "text" as const, text: "Pass draft_id (from fill_deck_plan) or decklist_text." }] };
+    }
+
     if (submit && (!deck_name || !wincon_summary || !general_strategy)) {
       return { content: [{ type: "text" as const, text: "submit:true requires deck_name, wincon_summary, and general_strategy." }] };
     }
@@ -126,12 +172,14 @@ const validateAndSubmitTool: ToolDefinition<typeof inputSchema> = {
         price_fetched_at: new Date(),
         wincon_summary: wincon_summary!,
         general_strategy: general_strategy!,
-        source: "validate_and_submit",
+        source: draft_id ? "fill_deck_plan" : "validate_and_submit",
+        ...(promptId ? { prompt_id: promptId, constraints: draftConstraints } : {}),
       };
 
       const pushed = await pushDeck(ctx.writeDb, ctx.ownerUserId, deckFields, existingDeck, { is_public });
       deckIdToReturn = pushed.deck_id;
       deckUrl = `https://manaramp.com/decks/${pushed.slug}`;
+      if (promptId) await markPromptBuilt(ctx.writeDb, promptId, pushed.deck_id);
     }
 
     return {
@@ -140,6 +188,7 @@ const validateAndSubmitTool: ToolDefinition<typeof inputSchema> = {
         text: JSON.stringify({
           deck_id: deckIdToReturn,
           deck_url: deckUrl,
+          swap_notes: swapNotes.length ? swapNotes : undefined,
           consistency_issues: consistency.issues,
           not_found: consistency.not_found,
           game_changers_found: facts.game_changers_found,

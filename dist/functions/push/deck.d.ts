@@ -1,5 +1,6 @@
 import { Db } from 'mongodb';
 import { DeckDoc } from '../query/decks.js';
+import '../query/deck-prompts.js';
 
 /**
  * functions/push/deck.ts -- the ONE place that writes to manaramp's `decks` Mongo collection.

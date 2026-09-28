@@ -1,4 +1,7 @@
 import { validateAndSubmitTool } from "./validate-and-submit.js";
+import { deckPlanGuideTool } from "./deck-plan-guide.js";
+import { fillDeckPlanTool } from "./fill-deck-plan.js";
+import { editDeckTool } from "./edit-deck.js";
 import { formatGuidelinesTool } from "./format-guidelines.js";
 import { readDeckTool } from "./read-deck.js";
 import { queryCardsTool } from "./search-cards.js";
@@ -10,6 +13,9 @@ import { arenaDraftGameAdviceTool } from "./arena-game-advice.js";
 import { pushDraftResultTool, pushGameLogTool } from "./internal-tools.js";
 import { toRemoteProxy } from "./shared/remote-proxy.js";
 const mongoBackedTools = [
+  deckPlanGuideTool,
+  fillDeckPlanTool,
+  editDeckTool,
   validateAndSubmitTool,
   readDeckTool,
   queryCardsTool,
@@ -35,6 +41,9 @@ const localTools = [
 export {
   arenaDraftAssistanceTool,
   arenaDraftGameAdviceTool,
+  deckPlanGuideTool,
+  editDeckTool,
+  fillDeckPlanTool,
   formatGuidelinesTool,
   getAccountSettingsTool,
   localTools,

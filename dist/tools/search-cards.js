@@ -20,7 +20,15 @@ function effectNames(effects) {
   walk(effects, "?");
   return [...out];
 }
-function toCompact(c) {
+function toBrief(c) {
+  const out = { name: c.name, type_line: c.type_line, color_identity: c.color_identity.join("") || "C" };
+  if (c.mana_cost) out.mana_cost = c.mana_cost;
+  const names = effectNames(c.effects);
+  if (names.length) out.effect_names = names;
+  if (c.price_usd != null) out.price_usd = c.price_usd;
+  return out;
+}
+function toCompact(c, includeDraftStats = false) {
   const out = { name: c.name, oracle_id: c.oracle_id, type_line: c.type_line, color_identity: c.color_identity.join("") || "C" };
   if (c.mana_cost) out.mana_cost = c.mana_cost;
   if (c.cmc != null) out.cmc = c.cmc;
@@ -31,7 +39,7 @@ function toCompact(c) {
   const names = effectNames(c.effects);
   if (names.length) out.effect_names = names;
   if (c.price_usd != null) out.price_usd = c.price_usd;
-  if (c.format_stats?.length) {
+  if (includeDraftStats && c.format_stats?.length) {
     out.format_stats = c.format_stats.map((f) => ({
       set: f.set_code,
       format: f.format,
@@ -49,6 +57,10 @@ const filterFields = {
   oracle_ids: z.array(z.string()).optional().describe("Batch lookup by the `cards` collection's own _id. Same priority as names."),
   arena_grp_ids: z.array(z.number()).optional().describe("Arena's numeric grpIds -- batch lookup. Same priority as names/oracle_ids."),
   name_contains: z.string().optional().describe("Substring search against card names, case-insensitive."),
+  trigger_event: z.string().optional().describe("What fires the ability: etb, dies, leaves_battlefield, attacks, blocks, cast_spell, deals_damage, draws, sacrificed, token_created, counter_added, life_gained, upkeep, end_step, combat. Implies a triggered ability."),
+  trigger_watches: z.object({ type: z.string().optional(), modifier: z.string().optional() }).optional().describe("Which objects the trigger watches, e.g. { type: 'Creature', modifier: 'YouCtrl' } = 'whenever a creature you control...' (excludes 'when THIS enters')."),
+  cost_contains: z.object({ kind: z.string(), arg: z.string().optional() }).optional().describe("An ability whose cost includes this part: { kind: 'Sac', arg: 'Creature' } = sacrifice-a-creature outlets (not self-sacrifice). Kinds: Sac, Tap, Discard, PayLife, Exile, SubCounter."),
+  roles_any: z.array(z.string()).optional().describe("Precomputed roles, any-of: mana_rock, mana_dork, land_ramp, card_draw, removal, mass_removal, counterspell, tutor, recursion, token_generator, player_damage, extra_land_drop."),
   type_line_contains: z.string().optional().describe("Substring of the type line, case-insensitive -- e.g. 'Legendary Creature', 'Elf', 'Equipment'."),
   color_identity_subset_of: z.array(z.string()).optional().describe("Cards whose color_identity is a SUBSET of this list -- the standard 'legal to include under this commander' filter, e.g. ['W','U','B'] for an Esper commander."),
   colors_include: z.array(z.string()).optional().describe("Cards whose `colors` array includes ALL of these."),
@@ -81,19 +93,20 @@ const inputSchema = {
   searches: z.array(z.object({ label: z.string().optional().describe("Name for this search's result list, e.g. 'ramp'."), ...filterFields })).max(MAX_SEARCHES).optional().describe(
     `Run up to ${MAX_SEARCHES} searches in ONE call (2026-09-26) -- e.g. ramp, card draw, removal and lands for a deck, each its own entry with its own filters (every filter above is valid inside each entry; filters within an entry are AND-ed). Strongly preferred over separate calls: each extra call re-sends the whole conversation. Response: { results: { <label>: [card names] }, cards: { <name>: card } } -- a card matching several searches is listed under each label but described once. Top-level filters are ignored when searches is given.`
   ),
-  detail: z.enum(["summary", "full"]).optional().describe(
-    "'summary' (default): name, mana cost, type, oracle text, P/T, color identity, price, effect_names (the Forge effect names effect_in matches, as 'kind:Effect'), and trimmed 17Lands format_stats. 'full': the complete record -- the raw Forge effects tree, every format's legality, printing/image, full 17Lands rows. Only ask for 'full' when you genuinely need those; it's roughly 5x larger per card."
-  )
+  detail: z.enum(["brief", "summary", "full"]).optional().describe(
+    "'brief': name, mana cost, type, color identity, effect_names, price -- no oracle text; use it for broad exploratory searches, then look up the shortlist by `names` at the default detail. 'summary' (default): adds oracle text, P/T, keywords. 'full': the complete record (raw Forge effects tree, every format's legality, printing/image, full 17Lands rows) -- roughly 5x larger per card, only when genuinely needed."
+  ),
+  include_draft_stats: z.boolean().optional().describe("Add trimmed 17Lands draft stats (format_stats: gih_wr, alsa, ata, iih) to 'summary' results. Off by default -- limited-format data, irrelevant to Commander deck building.")
 };
 const queryCardsTool = {
   name: "query_cards",
-  description: "Look up real cards from manaramp's own database -- by exact name (batch), oracle_id, Arena grpId, or a filtered search (color identity, mana value, ability search via effect_in/trigger_kind/effect_param_contains -- Forge's own real effect data, see effect_in's own description for the vocabulary and examples -- price, format legality, oracle-text substring, etc). Prefer this over general knowledge when assembling or researching a decklist -- ground card choices in what's actually here rather than guessing, then feed the assembled decklist into validate_and_submit. A result with no effect_names means this card genuinely has no scripted ability (a vanilla creature, a basic land) -- confirmed, not unclassified. Legality: filter with legal_in rather than reading it off results (the per-format map is only in detail: 'full'). When you need several kinds of cards (ramp, draw, removal, lands...), put them all in ONE call via `searches` rather than one call each.",
+  description: "Look up real cards from manaramp's own database -- by exact name (batch), oracle_id, Arena grpId, or a filtered search (color identity, mana value, ability search via effect_in/trigger_kind/effect_param_contains -- Forge's own real effect data, see effect_in's own description for the vocabulary and examples -- price, format legality, oracle-text substring, etc). Prefer this over general knowledge when assembling or researching a decklist -- ground card choices in what's actually here rather than guessing, then feed the assembled decklist into validate_and_submit. A result with no effect_names means this card genuinely has no scripted ability (a vanilla creature, a basic land) -- confirmed, not unclassified. Legality: filter with legal_in rather than reading it off results (the per-format map is only in detail: 'full'). When you need several kinds of cards (ramp, draw, removal, lands...), put them all in ONE call via `searches` rather than one call each. Building around a commander: call query_synergies FIRST (EDHREC's real picks for it), and pass color_identity_subset_of = the commander's color identity on every search so off-color cards never come back.",
   inputSchema,
   handler: async (args, ctx) => {
     const priceSource = await ctx.getPriceSourcePreference?.() ?? "cardkingdom";
     const preferredPrinting = await ctx.getPreferredPrintingPreference?.() ?? "most_recent";
-    const { detail, searches, ...filters } = args;
-    const shape = (c) => detail === "full" ? c : toCompact(c);
+    const { detail, searches, include_draft_stats, ...filters } = args;
+    const shape = (c) => detail === "full" ? c : detail === "brief" ? toBrief(c) : toCompact(c, include_draft_stats === true);
     if (!searches?.length) {
       const cards2 = await queryCards(ctx.readDb, filters, priceSource, preferredPrinting);
       return { content: [{ type: "text", text: JSON.stringify(cards2.map(shape)) }] };

@@ -18,8 +18,9 @@ const querySynergiesTool: ToolDefinition<typeof inputSchema> = {
   name: "query_synergies",
   description:
     "Look up EDHREC-derived recommended cards for a specific commander (synergy % and inclusion % " +
-    "per recommended card) -- use this while researching or assembling a decklist around a " +
-    "commander, before or instead of running the full validate_and_submit analysis. Throws a clear error " +
+    "per recommended card). When building or editing a deck around a named commander, call this " +
+    "FIRST -- it's a real, curated shortlist, so query_cards searches can then fill specific gaps " +
+    "instead of sweeping broadly. Throws a clear error " +
     "if the commander hasn't been ingested yet or its recommendations haven't synced -- that's a " +
     "real 'not available yet' case, not a sign the commander name is wrong.",
   inputSchema,

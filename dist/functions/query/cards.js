@@ -108,7 +108,8 @@ function toSummary(doc, priceSource, tokensById, pinnedScryfallId, preferredPrin
     printing: printing ? { scryfall_id: printing.scryfall_id, set_code: printing.set_code, collector_number: printing.collector_number } : null,
     price_usd: resolvePriceForEntry(marketEntry, priceSource),
     image_url: printing?.image_url ?? null,
-    format_stats: doc.format_stats ?? []
+    format_stats: doc.format_stats ?? [],
+    roles: doc.role_flags ?? []
   };
 }
 async function resolveTokenScripts(db, docs) {
@@ -135,21 +136,28 @@ function keyPaths(key) {
   if (zoneKey) paths.push(`zone_change.${zoneKey}`);
   return paths;
 }
-async function queryCards(db, filters, priceSource = "cardkingdom", preferredPrinting = "most_recent") {
-  const pinned = (id) => filters.printing_preferences?.[id];
-  if (filters.names?.length) {
-    const regexes = filters.names.map((n) => new RegExp(`^${escapeRegex(n)}$`, "i"));
-    const docs2 = await db.collection("cards").find({ name: { $in: regexes } }).toArray();
-    return finalize(db, docs2, priceSource, pinned, preferredPrinting);
-  }
-  if (filters.oracle_ids?.length) {
-    const docs2 = await db.collection("cards").find({ _id: { $in: filters.oracle_ids } }).toArray();
-    return finalize(db, docs2, priceSource, pinned, preferredPrinting);
-  }
-  if (filters.arena_grp_ids?.length) {
-    const docs2 = await db.collection("cards").find({ arena_grp_ids: { $in: filters.arena_grp_ids } }).toArray();
-    return finalize(db, docs2, priceSource, pinned, preferredPrinting);
-  }
+const TRIGGER_EVENTS = {
+  etb: { "trigger.mode": "ChangesZone", "trigger.zone_change.to.type": "Battlefield" },
+  dies: { "trigger.mode": "ChangesZone", "trigger.zone_change.from.type": "Battlefield", "trigger.zone_change.to.type": "Graveyard" },
+  leaves_battlefield: { "trigger.mode": { $in: ["ChangesZone", "ChangesZoneAll"] }, "trigger.zone_change.from.type": "Battlefield" },
+  put_into_graveyard: { "trigger.mode": "ChangesZone", "trigger.zone_change.to.type": "Graveyard" },
+  attacks: { "trigger.mode": { $in: ["Attacks", "AttackersDeclared"] } },
+  blocks: { "trigger.mode": { $in: ["Blocks", "AttackerBlocked", "BlockersDeclared"] } },
+  cast_spell: { "trigger.mode": { $in: ["SpellCast", "SpellAbilityCast"] } },
+  deals_damage: { "trigger.mode": { $in: ["DamageDone", "DamageDoneOnce", "DamageAll"] } },
+  draws: { "trigger.mode": "Drawn" },
+  discards: { "trigger.mode": "Discarded" },
+  sacrificed: { "trigger.mode": "Sacrificed" },
+  token_created: { "trigger.mode": "TokenCreated" },
+  counter_added: { "trigger.mode": { $in: ["CounterAdded", "CounterAddedOnce"] } },
+  life_gained: { "trigger.mode": "LifeGained" },
+  life_lost: { "trigger.mode": "LifeLost" },
+  upkeep: { "trigger.mode": "Phase", "trigger.conditions.Phase.type": { $regex: "Upkeep", $options: "i" } },
+  end_step: { "trigger.mode": "Phase", "trigger.conditions.Phase.type": { $regex: "End", $options: "i" } },
+  combat: { "trigger.mode": "Phase", "trigger.conditions.Phase.type": { $regex: "Combat", $options: "i" } }
+};
+const TRIGGER_EVENT_NAMES = Object.keys(TRIGGER_EVENTS);
+function buildCardQuery(filters) {
   const query = {};
   if (filters.name_contains) {
     query.name = { $regex: filters.name_contains, $options: "i" };
@@ -159,6 +167,10 @@ async function queryCards(db, filters, priceSource = "cardkingdom", preferredPri
   }
   if (filters.color_identity_subset_of) {
     query.color_identity = { $not: { $elemMatch: { $nin: filters.color_identity_subset_of } } };
+  }
+  if (filters.color_identity_exact) {
+    const exact = filters.color_identity_exact.map((c) => c.toUpperCase());
+    query.color_identity = exact.length ? { $all: exact, $size: exact.length } : { $size: 0 };
   }
   if (filters.colors_include?.length) {
     query.colors = { $all: filters.colors_include };
@@ -183,9 +195,23 @@ async function queryCards(db, filters, priceSource = "cardkingdom", preferredPri
       $elemMatch: { $or: [{ "cardkingdom.price_usd": { $lte: filters.max_price_usd } }, { "manapool.price_usd": { $lte: filters.max_price_usd } }] }
     };
   }
-  if (filters.effect_in?.length || filters.trigger_kind || filters.effect_param_contains) {
+  if (filters.effect_in?.length || filters.trigger_kind || filters.effect_param_contains || filters.trigger_event || filters.trigger_watches || filters.cost_contains) {
     const effectMatch = {};
     if (filters.trigger_kind) effectMatch["trigger.kind"] = filters.trigger_kind;
+    if (filters.trigger_event) {
+      Object.assign(effectMatch, { "trigger.kind": "triggered" }, TRIGGER_EVENTS[filters.trigger_event] ?? { "trigger.mode": filters.trigger_event });
+    }
+    if (filters.trigger_watches?.type || filters.trigger_watches?.modifier) {
+      const clause = {};
+      if (filters.trigger_watches.type) clause.type = { $regex: `^${escapeRegex(filters.trigger_watches.type)}$`, $options: "i" };
+      if (filters.trigger_watches.modifier) clause.modifiers = { $regex: `^${escapeRegex(filters.trigger_watches.modifier)}$`, $options: "i" };
+      effectMatch["trigger.conditions.ValidCard"] = { $elemMatch: clause };
+    }
+    if (filters.cost_contains?.kind) {
+      const part = { kind: { $regex: `^${escapeRegex(filters.cost_contains.kind)}$`, $options: "i" } };
+      if (filters.cost_contains.arg) part.args = { $elemMatch: { $regex: escapeRegex(filters.cost_contains.arg), $options: "i" } };
+      effectMatch["trigger.cost"] = { $elemMatch: part };
+    }
     const stepMatch = {};
     if (filters.effect_in?.length) stepMatch.effect = { $in: filters.effect_in };
     if (filters.effect_param_contains) {
@@ -201,9 +227,38 @@ async function queryCards(db, filters, priceSource = "cardkingdom", preferredPri
   if (filters.effects_all?.length) {
     query["effects.result.effect"] = { $all: filters.effects_all };
   }
+  if (filters.roles_any?.length) {
+    query.role_flags = { $in: filters.roles_any };
+  }
+  if (filters.exclude_oracle_ids?.length) {
+    query._id = { $nin: filters.exclude_oracle_ids };
+  }
+  if (filters.nor?.length) {
+    query.$nor = filters.nor.map((f) => buildCardQuery({ ...f, nor: void 0, exclude_oracle_ids: void 0 }));
+  }
+  return query;
+}
+async function queryCards(db, filters, priceSource = "cardkingdom", preferredPrinting = "most_recent") {
+  const pinned = (id) => filters.printing_preferences?.[id];
+  if (filters.names?.length) {
+    const regexes = filters.names.map((n) => new RegExp(`^${escapeRegex(n)}$`, "i"));
+    const docs2 = await db.collection("cards").find({ name: { $in: regexes } }).toArray();
+    return finalize(db, docs2, priceSource, pinned, preferredPrinting);
+  }
+  if (filters.oracle_ids?.length) {
+    const docs2 = await db.collection("cards").find({ _id: { $in: filters.oracle_ids } }).toArray();
+    return finalize(db, docs2, priceSource, pinned, preferredPrinting);
+  }
+  if (filters.arena_grp_ids?.length) {
+    const docs2 = await db.collection("cards").find({ arena_grp_ids: { $in: filters.arena_grp_ids } }).toArray();
+    return finalize(db, docs2, priceSource, pinned, preferredPrinting);
+  }
+  const query = buildCardQuery(filters);
   const docs = await db.collection("cards").find(query).limit(Math.min(filters.limit ?? 25, 100)).toArray();
   return finalize(db, docs, priceSource, pinned, preferredPrinting);
 }
 export {
+  TRIGGER_EVENT_NAMES,
+  buildCardQuery,
   queryCards
 };

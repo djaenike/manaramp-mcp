@@ -1,16 +1,5 @@
+import { DeckPromptConstraints } from './deck-prompts.js';
 import { Db } from 'mongodb';
-
-/**
- * functions/decks.ts -- the ONE place that queries manaramp's `decks` Mongo collection for reads.
- * Moved 2026-09-17 (fifth pass) out of tools/query-decks.ts, which was doing this inline -- tools/
- * files are registration wrappers only now (name/description/schema/handler), no query logic of
- * their own; see CLAUDE.md's tool-consolidation section. Resolves stored oracle_ids back to real
- * card data via functions/cards.ts's queryCards (oracle_ids filter) instead of a separate `cards`
- * query.
- *
- * `decks` lives under the write-capable credential by convention (see tools/types.ts's McpContext),
- * so this takes writeDb for the decks collection itself and readDb separately for resolving cards.
- */
 
 interface DeckDoc {
     _id: string;
@@ -48,6 +37,15 @@ interface DeckDoc {
     general_strategy: string | null;
     source: string | null;
     origin_draft_result_id: string | null;
+    /** AI-built decks (2026-09-27, manaramp's schema/deck_prompts.ts) -- absent on older decks. */
+    prompt_id?: string | null;
+    constraints?: DeckPromptConstraints | null;
+    revisions?: Array<{
+        at: Date;
+        request: string | null;
+        added: string[];
+        removed: string[];
+    }>;
     created_at: Date;
     updated_at: Date;
 }

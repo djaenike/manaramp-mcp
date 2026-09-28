@@ -196,6 +196,8 @@ interface MongoCardDoc {
   arena_grp_ids: number[];
   keywords: string[] | null;
   effects: Effect[] | undefined;
+  /** Precomputed roles (manaramp's cards/role-flags.ts, 2026-09-27) -- absent until backfilled. */
+  role_flags?: string[];
   scryfall_printings: Array<{ scryfall_id: string; set_code: string; collector_number: string; released_at: string | null; image_url: string | null }>;
   market_data: MarketDataEntry[];
   format_stats: FormatStatsEntry[];
@@ -254,6 +256,8 @@ interface QueryCardsFilters {
   /** Cards whose color_identity is a SUBSET of this list -- the standard "legal to include under
    *  this commander" filter. Omit for no color-identity restriction. */
   color_identity_subset_of?: string[];
+  /** Color identity EXACTLY these colors (commander suggestions for "a red-black deck"). [] = colorless. */
+  color_identity_exact?: string[];
   /** Cards whose `colors` array includes ALL of these. Distinct from color_identity_subset_of. */
   colors_include?: string[];
   category?: string;
@@ -291,6 +295,27 @@ interface QueryCardsFilters {
    *  query instead of intersecting two (2026-09-26). Independent of effect_in/trigger_kind: those
    *  still constrain a single ability, this checks the card as a whole. */
   effects_all?: string[];
+  /** Cards whose precomputed role_flags include ANY of these (2026-09-27) -- e.g. ["removal"],
+   *  ["land_ramp", "mana_rock"]. Same role definitions as manaramp's website ability filters. */
+  roles_any?: string[];
+  /** What fires the ability (2026-09-27) -- plain event names mapped onto Forge's trigger Mode$ and
+   *  zone moves (TRIGGER_EVENTS below). Implies a triggered ability; correlates with effect_in/
+   *  effect_param_contains/trigger_watches on the SAME ability. */
+  trigger_event?: string;
+  /** Which objects the trigger watches -- matched against its ValidCard condition, e.g.
+   *  { type: "Creature", modifier: "YouCtrl" } = "whenever a creature you control ...". Excludes
+   *  "when THIS enters" (Card.Self) triggers by construction. */
+  trigger_watches?: { type?: string; modifier?: string };
+  /** An ability whose COST includes this part (2026-09-27) -- matched on Forge's parsed cost:
+   *  { kind: "Sac", arg: "Creature" } = "sacrifice a creature" (Viscera Seer, Ashnod's Altar), which
+   *  excludes self-sacrifice like Mind Stone (Sac/Self). Other kinds: Tap, Untap, Discard, PayLife,
+   *  Exile, SubCounter, Mana. Correlates with the other ability filters on the SAME ability. */
+  cost_contains?: { kind: string; arg?: string };
+  /** Skip these oracle_ids (fill_deck_plan's cross-slot dedupe). */
+  exclude_oracle_ids?: string[];
+  /** Exclude every card matching ANY of these filter sets -- deck-wide restrictions like "no
+   *  aristocrats" (2026-09-27). Each entry is a normal filter set, AND-ed within itself. */
+  nor?: QueryCardsFilters[];
   /** oracle_id -> scryfall_id, for pricing/imagery a SPECIFIC printing instead of the default
    *  (most-recent-release) one -- e.g. deck-analysis.ts pricing a deck whose owner pinned a printing
    *  for some cards (see manaramp's schema/decks.ts printing_preferences). Only affects which
@@ -327,6 +352,8 @@ interface CardSummary {
   price_usd: number | null;
   image_url: string | null;
   format_stats: FormatStatsEntry[];
+  /** Precomputed roles, [] when not yet backfilled. */
+  roles: string[];
 }
 
 /** `pinnedScryfallId` wins if it actually matches one of this card's printings; otherwise whichever
@@ -500,6 +527,7 @@ function toSummary(
     price_usd: resolvePriceForEntry(marketEntry, priceSource),
     image_url: printing?.image_url ?? null,
     format_stats: doc.format_stats ?? [],
+    roles: doc.role_flags ?? [],
   };
 }
 
@@ -551,32 +579,32 @@ function keyPaths(key: string): string[] {
   return paths;
 }
 
-/** The one canonical query against manaramp's `cards` collection -- see file header. `priceSource`
- *  (2026-09-21, defaults to 'cardkingdom' for callers that don't pass one -- no behavior change for
- *  them) resolves each result's CardSummary.price_usd to the calling account's own preference; see
- *  tools/shared/deck-analysis.ts's analyzeDecklist for the main consumer. */
-async function queryCards(
-  db: Db,
-  filters: QueryCardsFilters,
-  priceSource: "cardkingdom" | "manapool" = "cardkingdom",
-  preferredPrinting: "most_recent" | "cheapest" = "most_recent"
-): Promise<CardSummary[]> {
-  const pinned = (id: string) => filters.printing_preferences?.[id];
+/** trigger_event -> the Forge trigger fields that identify it. */
+const TRIGGER_EVENTS: Record<string, Record<string, unknown>> = {
+  etb: { "trigger.mode": "ChangesZone", "trigger.zone_change.to.type": "Battlefield" },
+  dies: { "trigger.mode": "ChangesZone", "trigger.zone_change.from.type": "Battlefield", "trigger.zone_change.to.type": "Graveyard" },
+  leaves_battlefield: { "trigger.mode": { $in: ["ChangesZone", "ChangesZoneAll"] }, "trigger.zone_change.from.type": "Battlefield" },
+  put_into_graveyard: { "trigger.mode": "ChangesZone", "trigger.zone_change.to.type": "Graveyard" },
+  attacks: { "trigger.mode": { $in: ["Attacks", "AttackersDeclared"] } },
+  blocks: { "trigger.mode": { $in: ["Blocks", "AttackerBlocked", "BlockersDeclared"] } },
+  cast_spell: { "trigger.mode": { $in: ["SpellCast", "SpellAbilityCast"] } },
+  deals_damage: { "trigger.mode": { $in: ["DamageDone", "DamageDoneOnce", "DamageAll"] } },
+  draws: { "trigger.mode": "Drawn" },
+  discards: { "trigger.mode": "Discarded" },
+  sacrificed: { "trigger.mode": "Sacrificed" },
+  token_created: { "trigger.mode": "TokenCreated" },
+  counter_added: { "trigger.mode": { $in: ["CounterAdded", "CounterAddedOnce"] } },
+  life_gained: { "trigger.mode": "LifeGained" },
+  life_lost: { "trigger.mode": "LifeLost" },
+  upkeep: { "trigger.mode": "Phase", "trigger.conditions.Phase.type": { $regex: "Upkeep", $options: "i" } },
+  end_step: { "trigger.mode": "Phase", "trigger.conditions.Phase.type": { $regex: "End", $options: "i" } },
+  combat: { "trigger.mode": "Phase", "trigger.conditions.Phase.type": { $regex: "Combat", $options: "i" } },
+};
+const TRIGGER_EVENT_NAMES = Object.keys(TRIGGER_EVENTS);
 
-  if (filters.names?.length) {
-    const regexes = filters.names.map((n) => new RegExp(`^${escapeRegex(n)}$`, "i"));
-    const docs = await db.collection<MongoCardDoc>("cards").find({ name: { $in: regexes } }).toArray();
-    return finalize(db, docs, priceSource, pinned, preferredPrinting);
-  }
-  if (filters.oracle_ids?.length) {
-    const docs = await db.collection<MongoCardDoc>("cards").find({ _id: { $in: filters.oracle_ids } }).toArray();
-    return finalize(db, docs, priceSource, pinned, preferredPrinting);
-  }
-  if (filters.arena_grp_ids?.length) {
-    const docs = await db.collection<MongoCardDoc>("cards").find({ arena_grp_ids: { $in: filters.arena_grp_ids } }).toArray();
-    return finalize(db, docs, priceSource, pinned, preferredPrinting);
-  }
-
+/** The Mongo filter for a (non-batch-lookup) search -- shared by queryCards and fill_deck_plan's
+ *  per-slot candidate queries (2026-09-27) so the two can never disagree on what a filter means. */
+function buildCardQuery(filters: QueryCardsFilters): Record<string, unknown> {
   const query: Record<string, unknown> = {};
 
   if (filters.name_contains) {
@@ -587,6 +615,10 @@ async function queryCards(
   }
   if (filters.color_identity_subset_of) {
     query.color_identity = { $not: { $elemMatch: { $nin: filters.color_identity_subset_of } } };
+  }
+  if (filters.color_identity_exact) {
+    const exact = filters.color_identity_exact.map((c) => c.toUpperCase());
+    query.color_identity = exact.length ? { $all: exact, $size: exact.length } : { $size: 0 };
   }
   if (filters.colors_include?.length) {
     query.colors = { $all: filters.colors_include };
@@ -618,9 +650,23 @@ async function queryCards(
   // effect_param_contains all correlate to the SAME entry in the effects[] array via one outer
   // $elemMatch, so "activated Destroy" doesn't accidentally match a card with a triggered Destroy
   // and an unrelated activated Draw.
-  if (filters.effect_in?.length || filters.trigger_kind || filters.effect_param_contains) {
+  if (filters.effect_in?.length || filters.trigger_kind || filters.effect_param_contains || filters.trigger_event || filters.trigger_watches || filters.cost_contains) {
     const effectMatch: Record<string, unknown> = {};
     if (filters.trigger_kind) effectMatch["trigger.kind"] = filters.trigger_kind;
+    if (filters.trigger_event) {
+      Object.assign(effectMatch, { "trigger.kind": "triggered" }, TRIGGER_EVENTS[filters.trigger_event] ?? { "trigger.mode": filters.trigger_event });
+    }
+    if (filters.trigger_watches?.type || filters.trigger_watches?.modifier) {
+      const clause: Record<string, unknown> = {};
+      if (filters.trigger_watches.type) clause.type = { $regex: `^${escapeRegex(filters.trigger_watches.type)}$`, $options: "i" };
+      if (filters.trigger_watches.modifier) clause.modifiers = { $regex: `^${escapeRegex(filters.trigger_watches.modifier)}$`, $options: "i" };
+      effectMatch["trigger.conditions.ValidCard"] = { $elemMatch: clause };
+    }
+    if (filters.cost_contains?.kind) {
+      const part: Record<string, unknown> = { kind: { $regex: `^${escapeRegex(filters.cost_contains.kind)}$`, $options: "i" } };
+      if (filters.cost_contains.arg) part.args = { $elemMatch: { $regex: escapeRegex(filters.cost_contains.arg), $options: "i" } };
+      effectMatch["trigger.cost"] = { $elemMatch: part };
+    }
 
     const stepMatch: Record<string, unknown> = {};
     if (filters.effect_in?.length) stepMatch.effect = { $in: filters.effect_in };
@@ -645,6 +691,46 @@ async function queryCards(
     query["effects.result.effect"] = { $all: filters.effects_all };
   }
 
+  if (filters.roles_any?.length) {
+    query.role_flags = { $in: filters.roles_any };
+  }
+  if (filters.exclude_oracle_ids?.length) {
+    query._id = { $nin: filters.exclude_oracle_ids };
+  }
+  if (filters.nor?.length) {
+    query.$nor = filters.nor.map((f) => buildCardQuery({ ...f, nor: undefined, exclude_oracle_ids: undefined }));
+  }
+  return query;
+}
+
+/** The one canonical query against manaramp's `cards` collection -- see file header. `priceSource`
+ *  (2026-09-21, defaults to 'cardkingdom' for callers that don't pass one -- no behavior change for
+ *  them) resolves each result's CardSummary.price_usd to the calling account's own preference; see
+ *  tools/shared/deck-analysis.ts's analyzeDecklist for the main consumer. */
+async function queryCards(
+  db: Db,
+  filters: QueryCardsFilters,
+  priceSource: "cardkingdom" | "manapool" = "cardkingdom",
+  preferredPrinting: "most_recent" | "cheapest" = "most_recent"
+): Promise<CardSummary[]> {
+  const pinned = (id: string) => filters.printing_preferences?.[id];
+
+  if (filters.names?.length) {
+    const regexes = filters.names.map((n) => new RegExp(`^${escapeRegex(n)}$`, "i"));
+    const docs = await db.collection<MongoCardDoc>("cards").find({ name: { $in: regexes } }).toArray();
+    return finalize(db, docs, priceSource, pinned, preferredPrinting);
+  }
+  if (filters.oracle_ids?.length) {
+    const docs = await db.collection<MongoCardDoc>("cards").find({ _id: { $in: filters.oracle_ids } }).toArray();
+    return finalize(db, docs, priceSource, pinned, preferredPrinting);
+  }
+  if (filters.arena_grp_ids?.length) {
+    const docs = await db.collection<MongoCardDoc>("cards").find({ arena_grp_ids: { $in: filters.arena_grp_ids } }).toArray();
+    return finalize(db, docs, priceSource, pinned, preferredPrinting);
+  }
+
+  const query = buildCardQuery(filters);
+
   const docs = await db
     .collection<MongoCardDoc>("cards")
     .find(query)
@@ -654,5 +740,5 @@ async function queryCards(
   return finalize(db, docs, priceSource, pinned, preferredPrinting);
 }
 
-export { queryCards };
+export { queryCards, buildCardQuery, TRIGGER_EVENT_NAMES };
 export type { QueryCardsFilters, CardSummary, FormatStatsEntry, Effect, EffectStep, EffectValue, EffectClause, ZoneChange, EffectCostPart, EffectBranch, TokenDescriptor };

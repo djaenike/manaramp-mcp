@@ -59,6 +59,9 @@
  */
 
 import { validateAndSubmitTool } from "./validate-and-submit.js";
+import { deckPlanGuideTool } from "./deck-plan-guide.js";
+import { fillDeckPlanTool } from "./fill-deck-plan.js";
+import { editDeckTool } from "./edit-deck.js";
 import { formatGuidelinesTool } from "./format-guidelines.js";
 import { readDeckTool } from "./read-deck.js";
 import { queryCardsTool } from "./search-cards.js";
@@ -71,7 +74,13 @@ import { pushDraftResultTool, pushGameLogTool } from "./internal-tools.js";
 import { toRemoteProxy } from "./shared/remote-proxy.js";
 import type { ToolDefinition } from "./types.js";
 
+// deck_plan_guide / fill_deck_plan / edit_deck (2026-09-27) -- the plan -> fill -> submit deck flow.
+// deck_plan_guide needs the database (stored deck prompts, effect vocabulary), so it's remote-backed
+// like the rest, not local like format_guidelines.
 const mongoBackedTools: ToolDefinition<any>[] = [
+  deckPlanGuideTool,
+  fillDeckPlanTool,
+  editDeckTool,
   validateAndSubmitTool,
   readDeckTool,
   queryCardsTool,
@@ -104,6 +113,9 @@ const localTools: ToolDefinition<any>[] = [
 export {
   tools,
   localTools,
+  deckPlanGuideTool,
+  fillDeckPlanTool,
+  editDeckTool,
   validateAndSubmitTool,
   formatGuidelinesTool,
   readDeckTool,

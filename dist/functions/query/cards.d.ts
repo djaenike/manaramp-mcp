@@ -216,6 +216,8 @@ interface QueryCardsFilters {
     /** Cards whose color_identity is a SUBSET of this list -- the standard "legal to include under
      *  this commander" filter. Omit for no color-identity restriction. */
     color_identity_subset_of?: string[];
+    /** Color identity EXACTLY these colors (commander suggestions for "a red-black deck"). [] = colorless. */
+    color_identity_exact?: string[];
     /** Cards whose `colors` array includes ALL of these. Distinct from color_identity_subset_of. */
     colors_include?: string[];
     category?: string;
@@ -253,6 +255,33 @@ interface QueryCardsFilters {
      *  query instead of intersecting two (2026-09-26). Independent of effect_in/trigger_kind: those
      *  still constrain a single ability, this checks the card as a whole. */
     effects_all?: string[];
+    /** Cards whose precomputed role_flags include ANY of these (2026-09-27) -- e.g. ["removal"],
+     *  ["land_ramp", "mana_rock"]. Same role definitions as manaramp's website ability filters. */
+    roles_any?: string[];
+    /** What fires the ability (2026-09-27) -- plain event names mapped onto Forge's trigger Mode$ and
+     *  zone moves (TRIGGER_EVENTS below). Implies a triggered ability; correlates with effect_in/
+     *  effect_param_contains/trigger_watches on the SAME ability. */
+    trigger_event?: string;
+    /** Which objects the trigger watches -- matched against its ValidCard condition, e.g.
+     *  { type: "Creature", modifier: "YouCtrl" } = "whenever a creature you control ...". Excludes
+     *  "when THIS enters" (Card.Self) triggers by construction. */
+    trigger_watches?: {
+        type?: string;
+        modifier?: string;
+    };
+    /** An ability whose COST includes this part (2026-09-27) -- matched on Forge's parsed cost:
+     *  { kind: "Sac", arg: "Creature" } = "sacrifice a creature" (Viscera Seer, Ashnod's Altar), which
+     *  excludes self-sacrifice like Mind Stone (Sac/Self). Other kinds: Tap, Untap, Discard, PayLife,
+     *  Exile, SubCounter, Mana. Correlates with the other ability filters on the SAME ability. */
+    cost_contains?: {
+        kind: string;
+        arg?: string;
+    };
+    /** Skip these oracle_ids (fill_deck_plan's cross-slot dedupe). */
+    exclude_oracle_ids?: string[];
+    /** Exclude every card matching ANY of these filter sets -- deck-wide restrictions like "no
+     *  aristocrats" (2026-09-27). Each entry is a normal filter set, AND-ed within itself. */
+    nor?: QueryCardsFilters[];
     /** oracle_id -> scryfall_id, for pricing/imagery a SPECIFIC printing instead of the default
      *  (most-recent-release) one -- e.g. deck-analysis.ts pricing a deck whose owner pinned a printing
      *  for some cards (see manaramp's schema/decks.ts printing_preferences). Only affects which
@@ -292,11 +321,17 @@ interface CardSummary {
     price_usd: number | null;
     image_url: string | null;
     format_stats: FormatStatsEntry[];
+    /** Precomputed roles, [] when not yet backfilled. */
+    roles: string[];
 }
+declare const TRIGGER_EVENT_NAMES: string[];
+/** The Mongo filter for a (non-batch-lookup) search -- shared by queryCards and fill_deck_plan's
+ *  per-slot candidate queries (2026-09-27) so the two can never disagree on what a filter means. */
+declare function buildCardQuery(filters: QueryCardsFilters): Record<string, unknown>;
 /** The one canonical query against manaramp's `cards` collection -- see file header. `priceSource`
  *  (2026-09-21, defaults to 'cardkingdom' for callers that don't pass one -- no behavior change for
  *  them) resolves each result's CardSummary.price_usd to the calling account's own preference; see
  *  tools/shared/deck-analysis.ts's analyzeDecklist for the main consumer. */
 declare function queryCards(db: Db, filters: QueryCardsFilters, priceSource?: "cardkingdom" | "manapool", preferredPrinting?: "most_recent" | "cheapest"): Promise<CardSummary[]>;
 
-export { type CardSummary, type Effect, type EffectBranch, type EffectClause, type EffectCostPart, type EffectStep, type EffectValue, type FormatStatsEntry, type QueryCardsFilters, type TokenDescriptor, type ZoneChange, queryCards };
+export { type CardSummary, type Effect, type EffectBranch, type EffectClause, type EffectCostPart, type EffectStep, type EffectValue, type FormatStatsEntry, type QueryCardsFilters, TRIGGER_EVENT_NAMES, type TokenDescriptor, type ZoneChange, buildCardQuery, queryCards };

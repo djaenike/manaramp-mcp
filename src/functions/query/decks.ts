@@ -38,6 +38,10 @@ interface DeckDoc {
   general_strategy: string | null;
   source: string | null;
   origin_draft_result_id: string | null;
+  /** AI-built decks (2026-09-27, manaramp's schema/deck_prompts.ts) -- absent on older decks. */
+  prompt_id?: string | null;
+  constraints?: import("./deck-prompts.js").DeckPromptConstraints | null;
+  revisions?: Array<{ at: Date; request: string | null; added: string[]; removed: string[] }>;
   created_at: Date;
   updated_at: Date;
 }

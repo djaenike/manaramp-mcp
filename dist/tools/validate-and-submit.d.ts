@@ -33,7 +33,18 @@ import 'mongodb';
  */
 
 declare const inputSchema: {
-    decklist_text: z.ZodString;
+    draft_id: z.ZodOptional<z.ZodString>;
+    swaps: z.ZodOptional<z.ZodArray<z.ZodObject<{
+        out: z.ZodOptional<z.ZodString>;
+        in: z.ZodOptional<z.ZodString>;
+    }, "strip", z.ZodTypeAny, {
+        out?: string | undefined;
+        in?: string | undefined;
+    }, {
+        out?: string | undefined;
+        in?: string | undefined;
+    }>, "many">>;
+    decklist_text: z.ZodOptional<z.ZodString>;
     submit: z.ZodOptional<z.ZodBoolean>;
     deck_id: z.ZodOptional<z.ZodString>;
     deck_name: z.ZodOptional<z.ZodString>;

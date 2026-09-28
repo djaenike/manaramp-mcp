@@ -41,4 +41,11 @@ declare function analyzeDecklist(readDb: Db, decklist_text: string, priceSource?
 /** Shared by optimize_deck and publish_deck's own bracket_level_matches_request field. */
 declare function extractBracketNumber(s: unknown): string | null;
 
-export { type DeckAnalysis, analyzeDecklist, extractBracketNumber };
+/** Commander/Deck text in the exact shape analyzeDecklist parses (2026-09-27) -- how the draft_id /
+ *  edit_deck paths feed a server-held list into the same analysis a pasted decklist gets. */
+declare function toDecklistText(commanderNames: string[], entries: Array<{
+    name: string;
+    qty: number;
+}>): string;
+
+export { type DeckAnalysis, analyzeDecklist, extractBracketNumber, toDecklistText };

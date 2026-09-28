@@ -60,7 +60,9 @@ async function analyzeDecklist(readDb: Db, decklist_text: string, priceSource: "
   }
   for (const entry of deckEntries) {
     const p = priceByNameLower.get(entry.name.toLowerCase());
-    if (p == null) { for (let i = 0; i < entry.qty; i++) cardsNotPriced.push(entry.name); } else priceTotal += p * entry.qty;
+    // One entry per card name, "Name xN" for multiples (2026-09-27) -- was one entry PER COPY, so 30
+    // unpriced Mountains came back as 30 identical strings.
+    if (p == null) cardsNotPriced.push(entry.qty > 1 ? `${entry.name} x${entry.qty}` : entry.name); else priceTotal += p * entry.qty;
   }
   priceTotal = Math.round(priceTotal * 100) / 100;
 
@@ -77,3 +79,11 @@ function extractBracketNumber(s: unknown): string | null {
 
 export { analyzeDecklist, extractBracketNumber };
 export type { DeckAnalysis };
+
+/** Commander/Deck text in the exact shape analyzeDecklist parses (2026-09-27) -- how the draft_id /
+ *  edit_deck paths feed a server-held list into the same analysis a pasted decklist gets. */
+function toDecklistText(commanderNames: string[], entries: Array<{ name: string; qty: number }>): string {
+  return ["Commander", ...commanderNames.map((n) => `1 ${n}`), "", "Deck", ...entries.filter((e) => e.qty > 0).map((e) => `${e.qty} ${e.name}`)].join("\n");
+}
+
+export { toDecklistText };

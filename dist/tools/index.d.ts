@@ -1,4 +1,7 @@
 export { validateAndSubmitTool } from './validate-and-submit.js';
+export { deckPlanGuideTool } from './deck-plan-guide.js';
+export { fillDeckPlanTool } from './fill-deck-plan.js';
+export { editDeckTool } from './edit-deck.js';
 export { formatGuidelinesTool } from './format-guidelines.js';
 export { readDeckTool } from './read-deck.js';
 export { queryCardsTool } from './search-cards.js';

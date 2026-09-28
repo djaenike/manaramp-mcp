@@ -1,0 +1,51 @@
+import { Db } from 'mongodb';
+
+/**
+ * functions/query/deck-prompts.ts
+ *
+ * manaramp-mcp's side of manaramp's `deck_prompts` collection (see manaramp's
+ * src/lib/server/schema/deck_prompts.ts, 2026-09-27) -- the stored "Create with AI" brief. Read by
+ * deck_plan_guide / fill_deck_plan by id; created here when a user asks the AI for a deck directly in
+ * chat (skipping the website form), so every AI-built deck has the same shape. Kept as a separate
+ * copy of the types, per this repo's boundary (manaramp doesn't depend on manaramp-mcp or vice versa).
+ */
+
+interface DeckPromptConstraints {
+    colors: string[];
+    max_price_usd: number | null;
+    bracket: number | null;
+    restrictions: string | null;
+    build_style: "original" | "community";
+    use_synergies: boolean;
+    use_combos: boolean;
+}
+interface DeckPromptDoc extends DeckPromptConstraints {
+    _id: string;
+    owner_user_id: string;
+    name: string | null;
+    format: string;
+    platform: string | null;
+    commander: {
+        oracle_id: string;
+        name: string;
+        color_identity: string[];
+    } | null;
+    prompt_text: string;
+    status: "pending" | "built" | "expired";
+    deck_ids: string[];
+    source?: "website" | "chat";
+    created_at: Date;
+    updated_at: Date;
+}
+/** Accepts "k7f2q9" or "#k7f2q9". Null when missing or owned by someone else. */
+declare function getDeckPrompt(db: Db, id: string, ownerUserId: string): Promise<DeckPromptDoc | null>;
+declare function constraintsOf(p: DeckPromptDoc): DeckPromptConstraints;
+declare function createChatDeckPrompt(db: Db, ownerUserId: string, input: {
+    format: string;
+    name: string | null;
+    commander: DeckPromptDoc["commander"];
+    constraints: DeckPromptConstraints;
+}): Promise<string>;
+declare function markPromptBuilt(db: Db, id: string, deckId: string): Promise<void>;
+
+export { type DeckPromptConstraints, type DeckPromptDoc, constraintsOf, createChatDeckPrompt, getDeckPrompt, markPromptBuilt };

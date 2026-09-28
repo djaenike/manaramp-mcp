@@ -28,7 +28,7 @@ const inputSchema = {
 const formatGuidelinesTool: ToolDefinition<typeof inputSchema> = {
   name: "format_guidelines",
   description:
-    "Reference-only deck-building targets and rules for a format -- for Commander: the REAL, official " +
+    "Building a NEW deck? Use deck_plan_guide instead (it includes all of this plus the plan schema). Reference-only deck-building targets and rules for a format -- for Commander: the REAL, official " +
     "Commander Bracket System criteria (Game Changers/combo/mass-land-denial/extra-turn/tutor rules " +
     "per bracket 1-5, verified against WotC's own current page) plus general composition guidance " +
     "(land/ramp/card-draw/interaction count ranges for a 100-card deck -- clearly NOT an official " +
