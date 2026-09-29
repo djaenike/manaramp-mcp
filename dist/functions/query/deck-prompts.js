@@ -12,10 +12,13 @@ function constraintsOf(p) {
     colors: p.colors ?? [],
     max_price_usd: p.max_price_usd ?? null,
     bracket: p.bracket ?? null,
+    theme: p.theme ?? null,
     restrictions: p.restrictions ?? null,
     build_style: p.build_style ?? "original",
     use_synergies: !!p.use_synergies,
-    use_combos: !!p.use_combos
+    use_combos: !!p.use_combos,
+    type_targets: p.type_targets ?? null,
+    role_targets: p.role_targets ?? null
   };
 }
 async function createChatDeckPrompt(db, ownerUserId, input) {

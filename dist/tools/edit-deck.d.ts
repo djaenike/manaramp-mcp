@@ -58,8 +58,10 @@ declare const inputSchema: {
             arg?: string | undefined;
         }>>;
         type_line_contains: z.ZodOptional<z.ZodString>;
+        name_contains: z.ZodOptional<z.ZodString>;
         oracle_text_contains: z.ZodOptional<z.ZodString>;
         category: z.ZodOptional<z.ZodString>;
+        colors_include: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
         cmc_min: z.ZodOptional<z.ZodNumber>;
         cmc_max: z.ZodOptional<z.ZodNumber>;
         max_price_usd: z.ZodOptional<z.ZodNumber>;
@@ -70,14 +72,13 @@ declare const inputSchema: {
         sort?: "cmc" | "varied" | "price" | undefined;
         category?: string | undefined;
         max_price_usd?: number | undefined;
+        effect_in?: string[] | undefined;
+        roles_any?: string[] | undefined;
         trigger_event?: string | undefined;
         cost_contains?: {
             kind: string;
             arg?: string | undefined;
         } | undefined;
-        cmc_max?: number | undefined;
-        roles_any?: string[] | undefined;
-        effect_in?: string[] | undefined;
         effects_all?: string[] | undefined;
         effect_param_contains?: {
             key: string;
@@ -87,23 +88,25 @@ declare const inputSchema: {
             type?: string | undefined;
             modifier?: string | undefined;
         } | undefined;
+        cmc_max?: number | undefined;
         trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
         type_line_contains?: string | undefined;
+        name_contains?: string | undefined;
         oracle_text_contains?: string | undefined;
+        colors_include?: string[] | undefined;
         cmc_min?: number | undefined;
     }, {
         count: number;
         sort?: "cmc" | "varied" | "price" | undefined;
         category?: string | undefined;
         max_price_usd?: number | undefined;
+        effect_in?: string[] | undefined;
+        roles_any?: string[] | undefined;
         trigger_event?: string | undefined;
         cost_contains?: {
             kind: string;
             arg?: string | undefined;
         } | undefined;
-        cmc_max?: number | undefined;
-        roles_any?: string[] | undefined;
-        effect_in?: string[] | undefined;
         effects_all?: string[] | undefined;
         effect_param_contains?: {
             key: string;
@@ -113,9 +116,12 @@ declare const inputSchema: {
             type?: string | undefined;
             modifier?: string | undefined;
         } | undefined;
+        cmc_max?: number | undefined;
         trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
         type_line_contains?: string | undefined;
+        name_contains?: string | undefined;
         oracle_text_contains?: string | undefined;
+        colors_include?: string[] | undefined;
         cmc_min?: number | undefined;
     }>, "many">>;
     constraints: z.ZodOptional<z.ZodObject<{

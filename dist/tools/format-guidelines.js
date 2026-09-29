@@ -6,7 +6,7 @@ const inputSchema = {
 };
 const formatGuidelinesTool = {
   name: "format_guidelines",
-  description: "Building a NEW deck? Use deck_plan_guide instead (it includes all of this plus the plan schema). Reference-only deck-building targets and rules for a format -- for Commander: the REAL, official Commander Bracket System criteria (Game Changers/combo/mass-land-denial/extra-turn/tutor rules per bracket 1-5, verified against WotC's own current page) plus general composition guidance (land/ramp/card-draw/interaction count ranges for a 100-card deck -- clearly NOT an official rule, just widely-cited community consensus to reason with). Call this before or while assembling a decklist with query_cards/query_combos/query_synergies, as context for what a well-built deck at a given power level looks like -- it takes no decklist and judges nothing itself. validate_and_submit is still what checks/reports facts about an actual decklist (including its own card_draw_found/removal_found/land_ramp_found/combos_found/etc, which map directly onto this tool's composition_guidance categories) and persists it.",
+  description: "Reference: a format's deck-building rules and, for Commander, the official Bracket 1-5 criteria. For building a deck use deck_plan_guide instead (it includes this).",
   inputSchema,
   handler: async ({ format, bracket_level }) => {
     const isCommander = format.trim().toLowerCase() === "commander";

@@ -279,6 +279,8 @@ interface QueryCardsFilters {
     };
     /** Skip these oracle_ids (fill_deck_plan's cross-slot dedupe). */
     exclude_oracle_ids?: string[];
+    /** Skip cards with these exact names (fill_deck_plan's bracket exclusions, 2026-09-28). */
+    exclude_names?: string[];
     /** Exclude every card matching ANY of these filter sets -- deck-wide restrictions like "no
      *  aristocrats" (2026-09-27). Each entry is a normal filter set, AND-ed within itself. */
     nor?: QueryCardsFilters[];

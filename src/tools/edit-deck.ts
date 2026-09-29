@@ -12,32 +12,17 @@
  * rebuild around a new commander goes through deck_plan_guide -> fill_deck_plan instead.
  */
 import { z } from "zod";
+import { filterShape } from "./shared/filter-shape.js";
 import { getDeckDoc } from "../functions/query/decks.js";
 import { queryCards, type QueryCardsFilters } from "../functions/query/cards.js";
 import { findCandidates, seededShuffle } from "../functions/query/candidates.js";
-import { toPlanCard } from "../functions/query/card-view.js";
+import { toBriefPlanCard } from "../functions/query/card-view.js";
 import { pushDeck } from "../functions/push/deck.js";
 import { analyzeDecklist, toDecklistText } from "./shared/deck-analysis.js";
 import { FORMAT_RULES } from "../functions/reference/deck-plan-guide-data.js";
 import type { DeckPromptConstraints } from "../functions/query/deck-prompts.js";
 import type { ToolDefinition } from "./types.js";
 
-const filterShape = {
-  roles_any: z.array(z.string()).optional(),
-  effect_in: z.array(z.string()).optional(),
-  effects_all: z.array(z.string()).optional(),
-  trigger_kind: z.enum(["cast", "activate", "triggered", "static", "replacement"]).optional(),
-  trigger_event: z.string().optional().describe("etb, dies, leaves_battlefield, attacks, blocks, cast_spell, deals_damage, draws, discards, sacrificed, token_created, counter_added, life_gained, life_lost, upkeep, end_step, combat"),
-  trigger_watches: z.object({ type: z.string().optional(), modifier: z.string().optional() }).optional().describe("What the trigger watches, e.g. { type: 'Creature', modifier: 'YouCtrl' } = creatures you control"),
-  effect_param_contains: z.object({ key: z.string(), value_contains: z.string() }).optional(),
-  cost_contains: z.object({ kind: z.string(), arg: z.string().optional() }).optional().describe("Ability cost includes this, e.g. { kind: 'Sac', arg: 'Creature' } = sacrifice-a-creature outlets"),
-  type_line_contains: z.string().optional(),
-  oracle_text_contains: z.string().optional(),
-  category: z.string().optional(),
-  cmc_min: z.number().optional(),
-  cmc_max: z.number().optional(),
-  max_price_usd: z.number().optional(),
-};
 
 const inputSchema = {
   deck_id: z.string().describe("The deck to edit (from read_deck, or a submit's deck_id)."),
@@ -236,12 +221,18 @@ const editDeckTool: ToolDefinition<typeof inputSchema> = {
       { _id: deck._id },
       { $push: { revisions: { $each: [{ at: new Date(), request: args.request ?? null, added, removed }], $slice: -20 } } } as never
     );
+    // Stored deck stats (price/composition/curve), same recompute as a website edit -- see McpContext.onDeckSaved.
+    await ctx.onDeckSaved?.(deck._id).catch(() => {});
 
     const addedDetail = added.length ? await queryCards(ctx.readDb, { names: [...new Set(added)] }, priceSource, preferredPrinting) : [];
     return text({
       deck_url: `https://manaramp.com/decks/${pushed.slug}`,
       commander: newIdentity ? commanderNames[0] : undefined,
-      added: addedDetail.map((c) => toPlanCard(c)),
+      // Brief views (2026-09-28): name/type/roles/price, no card text -- the reply only needs what changed.
+      added: addedDetail.map((c) => {
+        const { name, type_line, cmc, roles, price_usd } = toBriefPlanCard(c) as Record<string, unknown>;
+        return { name, type_line, cmc, roles, price_usd };
+      }),
       removed,
       total_cards: totalCards,
       price_usd: priceTotal,
@@ -250,6 +241,7 @@ const editDeckTool: ToolDefinition<typeof inputSchema> = {
       consistency_issues: consistency.issues.length ? consistency.issues : undefined,
       not_found: consistency.not_found.length ? consistency.not_found : undefined,
       notes: notes.length ? notes : undefined,
+      next: "Reply in a few lines: what changed and the new price. Link the deck.",
     });
   },
 };

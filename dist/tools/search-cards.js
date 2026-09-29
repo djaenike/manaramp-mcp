@@ -53,38 +53,29 @@ function toCompact(c, includeDraftStats = false) {
   return out;
 }
 const filterFields = {
-  names: z.array(z.string()).optional().describe("Exact (case-insensitive) name batch lookup. Takes precedence over every filter below."),
-  oracle_ids: z.array(z.string()).optional().describe("Batch lookup by the `cards` collection's own _id. Same priority as names."),
-  arena_grp_ids: z.array(z.number()).optional().describe("Arena's numeric grpIds -- batch lookup. Same priority as names/oracle_ids."),
-  name_contains: z.string().optional().describe("Substring search against card names, case-insensitive."),
-  trigger_event: z.string().optional().describe("What fires the ability: etb, dies, leaves_battlefield, attacks, blocks, cast_spell, deals_damage, draws, sacrificed, token_created, counter_added, life_gained, upkeep, end_step, combat. Implies a triggered ability."),
-  trigger_watches: z.object({ type: z.string().optional(), modifier: z.string().optional() }).optional().describe("Which objects the trigger watches, e.g. { type: 'Creature', modifier: 'YouCtrl' } = 'whenever a creature you control...' (excludes 'when THIS enters')."),
-  cost_contains: z.object({ kind: z.string(), arg: z.string().optional() }).optional().describe("An ability whose cost includes this part: { kind: 'Sac', arg: 'Creature' } = sacrifice-a-creature outlets (not self-sacrifice). Kinds: Sac, Tap, Discard, PayLife, Exile, SubCounter."),
-  roles_any: z.array(z.string()).optional().describe("Precomputed roles, any-of: mana_rock, mana_dork, land_ramp, card_draw, removal, mass_removal, counterspell, tutor, recursion, token_generator, player_damage, extra_land_drop."),
-  type_line_contains: z.string().optional().describe("Substring of the type line, case-insensitive -- e.g. 'Legendary Creature', 'Elf', 'Equipment'."),
-  color_identity_subset_of: z.array(z.string()).optional().describe("Cards whose color_identity is a SUBSET of this list -- the standard 'legal to include under this commander' filter, e.g. ['W','U','B'] for an Esper commander."),
-  colors_include: z.array(z.string()).optional().describe("Cards whose `colors` array includes ALL of these."),
-  category: z.string().optional().describe("e.g. 'Creature', 'Instant', 'Land', 'Artifact', 'Planeswalker', 'Other'."),
+  names: z.array(z.string()).optional().describe("Exact-name batch lookup (overrides filters)."),
+  oracle_ids: z.array(z.string()).optional().describe("Batch lookup by card id."),
+  arena_grp_ids: z.array(z.number()).optional().describe("Batch lookup by Arena grpId."),
+  name_contains: z.string().optional(),
+  trigger_event: z.string().optional().describe("etb, dies, attacks, cast_spell, token_created, counter_added, life_gained, upkeep, end_step... (implies triggered)."),
+  trigger_watches: z.object({ type: z.string().optional(), modifier: z.string().optional() }).optional().describe("e.g. { type: 'Creature', modifier: 'YouCtrl' } = whenever a creature you control..."),
+  cost_contains: z.object({ kind: z.string(), arg: z.string().optional() }).optional().describe("e.g. { kind: 'Sac', arg: 'Creature' } = sac outlets."),
+  roles_any: z.array(z.string()).optional().describe("Precomputed roles, any-of: mana_rock, mana_dork, land_ramp, card_draw, removal, mass_removal, counterspell, tutor, recursion, token_generator, player_damage, extra_land_drop, protection, buff."),
+  type_line_contains: z.string().optional().describe("e.g. 'Legendary Creature', 'Elf', 'Equipment'."),
+  color_identity_subset_of: z.array(z.string()).optional().describe("Within a commander's colors, e.g. ['W','U','B']."),
+  colors_include: z.array(z.string()).optional(),
+  category: z.string().optional().describe("Creature, Instant, Sorcery, Land, Artifact, Enchantment, Planeswalker."),
   cmc_min: z.number().optional(),
   cmc_max: z.number().optional(),
-  oracle_text_contains: z.string().optional().describe("Substring search against oracle text, case-insensitive."),
-  legal_in: z.string().optional().describe("A format key, e.g. 'commander', 'modern' -- only returns cards legal in that format."),
+  oracle_text_contains: z.string().optional(),
+  legal_in: z.string().optional().describe("Format key, e.g. 'commander'."),
   max_price_usd: z.number().optional(),
-  effect_in: z.array(z.string()).optional().describe(
-    `Ability search, rebuilt on each card's real Forge effect data (2026-09-22) -- matches any card with at least one effect step whose Forge ApiType effect name is in this list (OR-matched, so hedge with a few candidate names instead of guessing exactly one). Forge's real vocabulary is ~200 distinct names, mostly plain English verb-phrases: Draw, Discard, Mill, Scry, GainLife, LoseLife, DealDamage, Tap, Untap, Counter (counterspells), PutCounter/PutCounterAll, Token, Destroy/DestroyAll, Exile/ExileAll, Sacrifice/SacrificeAll, ChangeZone (tutors/recursion/discard-selection -- see effect_param_contains to narrow by Origin$/Destination$). Examples: removal = ["Destroy","DestroyAll","Exile","ExileAll"]; direct damage = ["DealDamage"]; sac outlets = ["Sacrifice","SacrificeAll"]. When unsure of the exact spelling, run a query WITHOUT this filter first and check a few results' effect_names values before narrowing.`
-  ),
-  trigger_kind: z.enum(["cast", "activate", "triggered", "static", "replacement"]).optional().describe(
-    "Narrows effect_in to steps belonging to an effect of this specific kind -- e.g. 'activate' for an ACTIVATED removal ability specifically, vs any removal regardless of how it fires. Or use alone (no effect_in) for 'any static ability, don't care what it does.' The kind and effect_in match MUST belong to the same ability on the card, not just both exist somewhere on it."
-  ),
-  effect_param_contains: z.object({
-    key: z.string().describe("The raw Forge field name, e.g. 'Origin', 'Destination', 'ValidTgts', 'TokenScript'."),
-    value_contains: z.string().describe("Case-insensitive substring to match against that field's value.")
-  }).optional().describe(
-    `Precision filter within the SAME step matched by effect_in (or any step, if effect_in is omitted) -- checked against that step's params and its own conditions. Tutors = effect_in: ["ChangeZone"], effect_param_contains: {key: "Origin", value_contains: "Library"}. Player-targeted damage = effect_in: ["DealDamage"], effect_param_contains: {key: "ValidTgts", value_contains: "Player"} (also try "Opponent", scripts vary). Only one key/value pair per call -- run two queries and intersect results if you need two conditions on the same step.`
-  ),
-  effects_all: z.array(z.string()).optional().describe(
-    'Card must have EVERY one of these Forge effect names somewhere in its abilities (AND) -- e.g. ["Draw", "Mana"] for cards that both draw and make mana. effect_in is any-of within one ability; use this when a single card must do several things. Combine freely with every other filter in the same search.'
-  ),
+  // Short descriptions (2026-09-28): tool definitions ride along on every model turn, and
+  // deck_plan_guide already carries the full vocabulary with meanings.
+  effect_in: z.array(z.string()).optional().describe("Forge effect names, any-of within one ability (e.g. Draw, DealDamage, Token, ChangeZone, PutCounter, Destroy). Case-sensitive; deck_plan_guide lists them."),
+  trigger_kind: z.enum(["cast", "activate", "triggered", "static", "replacement"]).optional().describe("How the matched ability fires (same ability as effect_in)."),
+  effect_param_contains: z.object({ key: z.string().describe("Forge param, e.g. Origin, Destination, ValidTgts"), value_contains: z.string() }).optional().describe("Narrow the effect_in step, e.g. tutors = ChangeZone + { key: 'Origin', value_contains: 'Library' }."),
+  effects_all: z.array(z.string()).optional().describe("Card has EVERY one of these effect names (AND)."),
   limit: z.number().optional().describe("Max results (default 25, capped at 100). Ignored for names/oracle_ids/arena_grp_ids batch lookups.")
 };
 const MAX_SEARCHES = 10;
@@ -100,7 +91,7 @@ const inputSchema = {
 };
 const queryCardsTool = {
   name: "query_cards",
-  description: "Look up real cards from manaramp's own database -- by exact name (batch), oracle_id, Arena grpId, or a filtered search (color identity, mana value, ability search via effect_in/trigger_kind/effect_param_contains -- Forge's own real effect data, see effect_in's own description for the vocabulary and examples -- price, format legality, oracle-text substring, etc). Prefer this over general knowledge when assembling or researching a decklist -- ground card choices in what's actually here rather than guessing, then feed the assembled decklist into validate_and_submit. A result with no effect_names means this card genuinely has no scripted ability (a vanilla creature, a basic land) -- confirmed, not unclassified. Legality: filter with legal_in rather than reading it off results (the per-format map is only in detail: 'full'). When you need several kinds of cards (ramp, draw, removal, lands...), put them all in ONE call via `searches` rather than one call each. Building around a commander: call query_synergies FIRST (EDHREC's real picks for it), and pass color_identity_subset_of = the commander's color identity on every search so off-color cards never come back.",
+  description: "Look up real cards: exact names (batch), ids, or filtered searches (roles, Forge effects, triggers, costs, type, colors, mana value, price, legality, text). Building a whole deck? Use fill_deck_plan instead -- it searches, picks and saves in one call. Several kinds of cards at once: put them in ONE call via `searches`. Pass color_identity_subset_of = the commander's colors so off-color cards never come back.",
   inputSchema,
   handler: async (args, ctx) => {
     const priceSource = await ctx.getPriceSourcePreference?.() ?? "cardkingdom";

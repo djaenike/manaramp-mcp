@@ -14,10 +14,18 @@ interface DeckPromptConstraints {
     colors: string[];
     max_price_usd: number | null;
     bracket: number | null;
+    /** What the deck should DO -- "bats", "ping opponents when creatures enter" (2026-09-28). */
+    theme?: string | null;
+    /** What to AVOID / hard rules -- "no aristocrats", "no infinite combos". */
     restrictions: string | null;
     build_style: "original" | "community";
     use_synergies: boolean;
     use_combos: boolean;
+    /** User-set card-type counts (Land, Creature, ...) summing to the deck size minus commander, or
+     *  null for the defaults (2026-09-28, Create with AI sliders). */
+    type_targets?: Record<string, number> | null;
+    /** User-set role counts (ramp, card_draw, removal, ...), or null for the defaults. */
+    role_targets?: Record<string, number> | null;
 }
 interface DeckPromptDoc extends DeckPromptConstraints {
     _id: string;
@@ -34,6 +42,9 @@ interface DeckPromptDoc extends DeckPromptConstraints {
     status: "pending" | "built" | "expired";
     deck_ids: string[];
     source?: "website" | "chat";
+    /** Set when the prompt REBUILDS an existing deck ("Edit with AI", 2026-09-28) -- the build
+     *  overwrites that deck instead of creating a new one. */
+    deck_id?: string | null;
     created_at: Date;
     updated_at: Date;
 }

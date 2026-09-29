@@ -230,11 +230,12 @@ function buildCardQuery(filters) {
   if (filters.roles_any?.length) {
     query.role_flags = { $in: filters.roles_any };
   }
+  if (filters.exclude_names?.length) query.name = { $nin: filters.exclude_names };
   if (filters.exclude_oracle_ids?.length) {
     query._id = { $nin: filters.exclude_oracle_ids };
   }
   if (filters.nor?.length) {
-    query.$nor = filters.nor.map((f) => buildCardQuery({ ...f, nor: void 0, exclude_oracle_ids: void 0 }));
+    query.$nor = filters.nor.map((f) => buildCardQuery({ ...f, nor: void 0, exclude_oracle_ids: void 0, exclude_names: void 0 }));
   }
   return query;
 }

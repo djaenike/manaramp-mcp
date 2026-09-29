@@ -5,6 +5,11 @@ async function findCandidates(db, filters, limit, priceSource = "cardkingdom", o
     { $match: buildCardQuery(filters) },
     // sample: a fresh random draw from ALL matches each call (commander suggestions reshuffle on
     // every request) instead of the first N in natural order.
+    // rankByPrintings (2026-09-28): most-reprinted first -- a card printed in dozens of products
+    // (Arcane Signet, Cultivate, Swords to Plowshares) is a staple; one-printing filler isn't. A
+    // quality signal from Manaramp's own data, no EDHREC. Without it, $limit keeps whatever the
+    // first matches in storage order happen to be.
+    ...opts.rankByPrintings && !opts.sample ? [{ $addFields: { _printings: { $size: { $ifNull: ["$scryfall_printings", []] } } } }, { $sort: { _printings: -1, _id: 1 } }] : [],
     opts.sample ? { $sample: { size: limit } } : { $limit: limit },
     {
       $project: {
@@ -12,6 +17,7 @@ async function findCandidates(db, filters, limit, priceSource = "cardkingdom", o
         cmc: 1,
         type_line: 1,
         roles: { $ifNull: ["$role_flags", []] },
+        printings: { $size: { $ifNull: ["$scryfall_printings", []] } },
         color_identity: { $ifNull: ["$color_identity", []] },
         price_usd: {
           $let: {

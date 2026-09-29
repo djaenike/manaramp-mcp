@@ -22,13 +22,8 @@ const inputSchema = {
 const readDeckTool: ToolDefinition<typeof inputSchema> = {
   name: "read_deck",
   description:
-    "Read the calling account's decks. Pass deck_id or slug to load ONE deck's full detail -- " +
-    "card names/mana costs/types, a ready-to-paste decklist_text (feed this straight into " +
-    "validate_and_submit to start editing), mana curve, price, bracket, and consistency_issues as of " +
-    "its last submit. Omit both to list every deck on the account instead (name/slug/format/" +
-    "price/bracket/consistency_issues summary only, no per-card detail -- call again with a specific " +
-    "deck_id once you know which one). Read-only -- never persists anything; use validate_and_submit " +
-    "(submit: true, with this deck's deck_id) to actually change it.",
+    "Read this account's decks: deck_id or slug for one deck's full detail (cards, decklist_text, curve, price, " +
+    "bracket, issues), or no args for the list. Changing a deck? edit_deck does it in one call.",
   inputSchema,
   handler: async ({ deck_id, slug }, ctx) => {
     if (!deck_id && !slug) {

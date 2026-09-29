@@ -21,10 +21,12 @@ interface Candidate {
     type_line: string;
     roles: string[];
     color_identity: string[];
+    printings?: number;
     price_usd: number | null;
 }
 declare function findCandidates(db: Db, filters: QueryCardsFilters, limit: number, priceSource?: "cardkingdom" | "manapool", opts?: {
     sample?: boolean;
+    rankByPrintings?: boolean;
 }): Promise<Candidate[]>;
 /** Deterministic shuffle (mulberry32 over a string seed) -- 'varied' ordering that's stable for a
  *  given draft, so re-filling the same plan gives the same deck, but two plans don't. */

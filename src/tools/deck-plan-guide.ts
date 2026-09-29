@@ -37,6 +37,7 @@ import {
   ARCHETYPES,
   BUDGET_WORDS,
 } from "../functions/reference/deck-plan-guide-data.js";
+import { resolveTargets } from "../functions/reference/deck-targets.js";
 import type { ToolDefinition } from "./types.js";
 
 const inputSchema = {
@@ -51,6 +52,7 @@ const inputSchema = {
   colors: z.array(z.string()).optional().describe("Without a prompt/deck: WUBRG letters the user asked for (drives commander_candidates)."),
   max_price_usd: z.number().optional().describe("Without a prompt/deck: the budget you're planning with."),
   all_effects: z.boolean().optional().describe("Include every effect name (~200+), not just the common ones. Rarely needed."),
+  detail: z.enum(["compact", "full"]).optional().describe("Default compact. 'full' adds the card schema, param keys, trigger modes and effect card counts -- only if you're writing unusual filters."),
 };
 
 interface VocabDoc {
@@ -64,11 +66,10 @@ const CANDIDATE_COUNT = 10;
 const deckPlanGuideTool: ToolDefinition<typeof inputSchema> = {
   name: "deck_plan_guide",
   description:
-    "START HERE for any deck build or edit -- call once first. Pass prompt_id (pasted Manaramp prompt), deck_id (editing), or " +
-    "colors/max_price_usd (asked in chat). Returns the constraints, what's missing, the commander analyzed (what it rewards) or " +
-    "commander_candidates when none is set (pass commander: null to get fresh ones), format rules, composition targets, " +
-    "archetype patterns, the exact filter vocabulary, the returned-card schema, and the fill_deck_plan schema with an example. " +
-    "Then: ONE plan -> fill_deck_plan -> validate_and_submit once (new), or edit_deck once (edits).",
+    "START HERE for any deck build or rebuild -- call once. Pass prompt_id (a pasted Manaramp prompt), deck_id, or colors/" +
+    "max_price_usd (asked in chat). Returns constraints, the deck's targets, the commander analyzed (what it rewards) or " +
+    "commander_candidates (commander: null reshuffles), archetype patterns, the filter vocabulary and the fill_deck_plan plan " +
+    "shape. Then ONE fill_deck_plan call builds and saves the deck. Small edits: edit_deck directly.",
   inputSchema,
   handler: async (args, ctx) => {
     const text = (body: unknown) => ({ content: [{ type: "text" as const, text: typeof body === "string" ? body : JSON.stringify(body) }] });
@@ -78,8 +79,9 @@ const deckPlanGuideTool: ToolDefinition<typeof inputSchema> = {
     // --- context: prompt, existing deck, or chat ---
     const prompt = args.prompt_id ? await getDeckPrompt(ctx.writeDb, args.prompt_id, ctx.ownerUserId) : null;
     if (args.prompt_id && !prompt) return text(`No deck prompt '#${args.prompt_id.replace(/^#/, "")}' on this account -- check the id, or continue without one.`);
-    const deck = args.deck_id ? await getDeckDoc(ctx.writeDb, { deck_id: args.deck_id }) : null;
-    if (args.deck_id && (!deck || deck.owner_user_id !== ctx.ownerUserId)) return text(`No deck '${args.deck_id}' on this account.`);
+    const deckIdArg = args.deck_id ?? prompt?.deck_id ?? null;
+    const deck = deckIdArg ? await getDeckDoc(ctx.writeDb, { deck_id: deckIdArg }) : null;
+    if (deckIdArg && (!deck || deck.owner_user_id !== ctx.ownerUserId)) return text(`No deck '${deckIdArg}' on this account.`);
 
     const format = (prompt?.format ?? deck?.format ?? args.format ?? "commander").toLowerCase();
     const rules = FORMAT_RULES[format];
@@ -134,7 +136,15 @@ const deckPlanGuideTool: ToolDefinition<typeof inputSchema> = {
         chosen = [...chosen, ...more];
       }
       const details = chosen.length ? await queryCards(ctx.readDb, { oracle_ids: chosen.map((c) => c._id) }, priceSource, preferredPrinting) : [];
-      candidates = details.map((d) => ({ ...toPlanCard(d), rewards: commanderRewards(d) }));
+      // Short view -- ten full cards were the guide's single biggest section.
+      candidates = details.map((d) => ({
+        name: d.name,
+        color_identity: d.color_identity.join("") || "C",
+        cmc: d.cmc ?? undefined,
+        price_usd: d.price_usd ?? undefined,
+        rewards: commanderRewards(d),
+        text: (d.oracle_text ?? "").replace(/\s+/g, " ").slice(0, 180),
+      }));
     }
 
     // --- what's still unknown ---
@@ -149,37 +159,44 @@ const deckPlanGuideTool: ToolDefinition<typeof inputSchema> = {
     }
 
     // --- live effect vocabulary ---
+    const full = args.detail === "full";
     const vocab = await ctx.readDb.collection<VocabDoc>("effect_vocabulary").findOne({ _id: "current" });
     const effects = (vocab?.effects ?? []).filter((e) => args.all_effects || e.cards >= 25);
-    const effectList = effects.map((e) => (EFFECT_MEANINGS[e.name] ? { name: e.name, cards: e.cards, means: EFFECT_MEANINGS[e.name] } : { name: e.name, cards: e.cards }));
+    const targets = resolveTargets(format, commander ? commander.color_identity : (constraints.colors ?? []), constraints);
+    const bracket = constraints.bracket;
 
     return text({
-      mode: deck ? "edit" : "new",
+      mode: deck ? (prompt?.deck_id ? "rebuild" : "edit") : "new",
       format,
       rules,
       validate_supported: rules.validate_supported
         ? undefined
-        : "validate_and_submit currently checks and saves Commander decks only -- you can plan and fill this format, but tell the user saving isn't supported yet.",
+        : "Saving is Commander-only for now -- fill_deck_plan returns an unsaved draft for this format; tell the user.",
       prompt: prompt ? { id: prompt._id, deck_name: prompt.name, platform: prompt.platform } : undefined,
       deck: deck
         ? { deck_id: deck._id, name: deck.name, total_cards: deck.size_summary?.total ?? deck.cards.length, price_usd: deck.price_usd, url: `https://manaramp.com/decks/${deck.slug}` }
         : undefined,
       constraints,
+      targets,
       commander: commander ? { ...toPlanCard(commander, "commander"), rewards: commanderRewards(commander) } : null,
       commander_candidates: candidates,
       missing,
-      composition_targets: rules.commander ? COMPOSITION_TARGETS.commander : COMPOSITION_TARGETS.sixty_card,
-      brackets: format === "commander" ? COMMANDER_BRACKETS.map((b) => ({ level: b.level, name: b.name, rules: b.deck_building })) : undefined,
+      brackets:
+        format === "commander"
+          ? bracket
+            ? COMMANDER_BRACKETS.filter((b) => b.level === bracket).map((b) => ({ level: b.level, name: b.name, rules: b.deck_building }))
+            : COMMANDER_BRACKETS.map((b) => `${b.level} ${b.name}`)
+          : undefined,
       archetypes: ARCHETYPES,
       budget_words: BUDGET_WORDS,
-      roles: ROLES,
-      effects: effectList.length
-        ? { list: effectList, note: args.all_effects ? undefined : "Common effects (25+ cards). all_effects: true for every name. Case-sensitive." }
-        : { note: "Effect vocabulary not generated yet -- use these meanings.", meanings: EFFECT_MEANINGS },
-      triggers: { ...TRIGGERS, modes: vocab?.trigger_modes?.filter((m) => m.cards >= 50).map((m) => m.name) },
-      param_keys: PARAM_KEYS,
+      roles: Object.fromEntries(Object.entries(ROLES).map(([k, v]) => [k, v.meaning])),
+      effects: full
+        ? effects.map((e) => (EFFECT_MEANINGS[e.name] ? { name: e.name, cards: e.cards, means: EFFECT_MEANINGS[e.name] } : { name: e.name, cards: e.cards }))
+        : { names: effects.map((e) => e.name).join(", ") || Object.keys(EFFECT_MEANINGS).join(", "), key_meanings: EFFECT_MEANINGS, note: "Case-sensitive." },
+      triggers: full ? { ...TRIGGERS, modes: vocab?.trigger_modes?.filter((m) => m.cards >= 50).map((m) => m.name) } : TRIGGERS.trigger_event_filter,
+      param_keys: full ? PARAM_KEYS : undefined,
       idea_examples: IDEA_EXAMPLES,
-      card_schema: CARD_SCHEMA,
+      card_schema: full ? CARD_SCHEMA : undefined,
       plan_schema: PLAN_SCHEMA,
       plan_example: PLAN_EXAMPLE,
       instructions: INSTRUCTIONS,

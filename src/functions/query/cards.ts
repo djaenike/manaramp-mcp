@@ -313,6 +313,8 @@ interface QueryCardsFilters {
   cost_contains?: { kind: string; arg?: string };
   /** Skip these oracle_ids (fill_deck_plan's cross-slot dedupe). */
   exclude_oracle_ids?: string[];
+  /** Skip cards with these exact names (fill_deck_plan's bracket exclusions, 2026-09-28). */
+  exclude_names?: string[];
   /** Exclude every card matching ANY of these filter sets -- deck-wide restrictions like "no
    *  aristocrats" (2026-09-27). Each entry is a normal filter set, AND-ed within itself. */
   nor?: QueryCardsFilters[];
@@ -694,11 +696,12 @@ function buildCardQuery(filters: QueryCardsFilters): Record<string, unknown> {
   if (filters.roles_any?.length) {
     query.role_flags = { $in: filters.roles_any };
   }
+  if (filters.exclude_names?.length) query.name = { $nin: filters.exclude_names };
   if (filters.exclude_oracle_ids?.length) {
     query._id = { $nin: filters.exclude_oracle_ids };
   }
   if (filters.nor?.length) {
-    query.$nor = filters.nor.map((f) => buildCardQuery({ ...f, nor: undefined, exclude_oracle_ids: undefined }));
+    query.$nor = filters.nor.map((f) => buildCardQuery({ ...f, nor: undefined, exclude_oracle_ids: undefined, exclude_names: undefined }));
   }
   return query;
 }

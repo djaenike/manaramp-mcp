@@ -110,6 +110,18 @@ declare const ROLES: {
             roles_any: string[];
         };
     };
+    buff: {
+        meaning: string;
+        filters: {
+            roles_any: string[];
+        };
+    };
+    protection: {
+        meaning: string;
+        filters: {
+            roles_any: string[];
+        };
+    };
 };
 /** Plain meanings for the Forge effect names worth knowing by heart. The full list with card counts
  *  comes from the database (effect_vocabulary) -- anything not here is still a valid name. */
@@ -161,30 +173,27 @@ declare const CARD_SCHEMA: {
 declare const PLAN_SCHEMA: {
     prompt_id: string;
     commander: string;
-    format: string;
-    constraints: string;
+    deck_name: string;
+    wincon_summary: string;
+    general_strategy: string;
+    bracket_estimate: string;
     exclude: string;
     slots: string;
-    basic_lands: string;
-    alternates_per_slot: string;
-    rules: string;
+    constraints: string;
+    review: string;
 };
 declare const PLAN_EXAMPLE: {
     commander: string;
-    exclude: ({
+    deck_name: string;
+    wincon_summary: string;
+    general_strategy: string;
+    bracket_estimate: string;
+    exclude: {
         cost_contains: {
             kind: string;
             arg: string;
         };
-        trigger_event?: undefined;
-        trigger_watches?: undefined;
-    } | {
-        trigger_event: string;
-        trigger_watches: {
-            type: string;
-        };
-        cost_contains?: undefined;
-    })[];
+    }[];
     slots: ({
         label: string;
         count: number;
@@ -196,8 +205,6 @@ declare const PLAN_EXAMPLE: {
         effect_in: string[];
         roles_any?: undefined;
         cmc_max?: undefined;
-        category?: undefined;
-        sort?: undefined;
     } | {
         label: string;
         count: number;
@@ -206,8 +213,6 @@ declare const PLAN_EXAMPLE: {
         trigger_event?: undefined;
         trigger_watches?: undefined;
         effect_in?: undefined;
-        category?: undefined;
-        sort?: undefined;
     } | {
         label: string;
         count: number;
@@ -216,42 +221,7 @@ declare const PLAN_EXAMPLE: {
         trigger_watches?: undefined;
         roles_any?: undefined;
         cmc_max?: undefined;
-        category?: undefined;
-        sort?: undefined;
-    } | {
-        label: string;
-        count: number;
-        roles_any: string[];
-        trigger_event?: undefined;
-        trigger_watches?: undefined;
-        effect_in?: undefined;
-        cmc_max?: undefined;
-        category?: undefined;
-        sort?: undefined;
-    } | {
-        label: string;
-        count: number;
-        category: string;
-        trigger_event?: undefined;
-        trigger_watches?: undefined;
-        effect_in?: undefined;
-        roles_any?: undefined;
-        cmc_max?: undefined;
-        sort?: undefined;
-    } | {
-        label: string;
-        count: number;
-        category: string;
-        cmc_max: number;
-        sort: string;
-        trigger_event?: undefined;
-        trigger_watches?: undefined;
-        effect_in?: undefined;
-        roles_any?: undefined;
     })[];
-    basic_lands: {
-        Mountain: number;
-    };
     note: string;
 };
 declare const IDEA_EXAMPLES: ({

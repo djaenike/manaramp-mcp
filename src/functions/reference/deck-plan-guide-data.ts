@@ -64,6 +64,8 @@ const ROLES = {
   token_generator: { meaning: "creates tokens", filters: { roles_any: ["token_generator"] } },
   player_damage: { meaning: "damages players directly", filters: { roles_any: ["player_damage"] } },
   extra_land_drop: { meaning: "lets you play additional lands", filters: { roles_any: ["extra_land_drop"] } },
+  buff: { meaning: "makes your other creatures bigger: pump spells, anthems, equipment/aura boosts, +1/+1 counters, proliferate, counter doublers", filters: { roles_any: ["buff"] } },
+  protection: { meaning: "gives your other permanents hexproof/indestructible/shroud/protection/ward, or phases them out (Heroic Intervention, Swiftfoot Boots)", filters: { roles_any: ["protection"] } },
 };
 
 /** Plain meanings for the Forge effect names worth knowing by heart. The full list with card counts
@@ -142,33 +144,27 @@ const CARD_SCHEMA = {
 };
 
 /** fill_deck_plan's input, for the model to fill in. */
+// Plan shape (2026-09-28): the model writes THEME slots only; fill_deck_plan fills the standard core
+// (roles + types + lands) to the deck's `targets` and saves the deck.
 const PLAN_SCHEMA = {
-  prompt_id: "the Manaramp deck prompt id if the user gave one -- constraints are read from it",
-  commander: "exact commander name (Commander/Brawl). Omit if prompt_id already has one",
-  format: "commander (default) or another key from `formats`",
-  constraints: "only when there's no prompt_id: { colors?: ['R'], max_price_usd?: 150, bracket?: 3, restrictions?: '...', build_style?: 'original'|'community', use_synergies?: bool, use_combos?: bool }",
-  exclude: "deck-wide exclusions, a list of filter sets -- use an archetype's `exclude` list for 'no <archetype>' (e.g. archetypes.aristocrats.exclude)",
-  slots: "ordered list, filled top-down (earlier slots claim cards first): { label, count, ...any query_cards filter (roles_any, effect_in, effects_all, trigger_kind, trigger_event, trigger_watches, cost_contains, effect_param_contains, type_line_contains, category, cmc_min/cmc_max, oracle_text_contains, max_price_usd), sort?: 'varied'|'cmc'|'price'|'synergy' }",
-  basic_lands: "e.g. { Mountain: 30 } -- counted toward the deck size, not a slot",
-  alternates_per_slot: "0-4, default 2 -- extra candidates per slot you can swap in at submit",
-  rules: "slot counts + basic lands + commander must equal the deck size exactly (Commander: 100). Colors and legality are applied to every slot automatically -- don't repeat them in slot filters.",
+  prompt_id: "the Manaramp deck prompt id if there is one -- commander, rules and targets are read from it",
+  commander: "exact name (Commander/Brawl) -- omit if the prompt has one",
+  deck_name: "short and specific", wincon_summary: "how it wins, one sentence", general_strategy: "how to pilot it, one short paragraph", bracket_estimate: "e.g. 'Bracket 2 (Core)' -- your judgment",
+  exclude: "deck-wide exclusions (list of filter sets) -- for 'no <archetype>' use archetypes.<name>.exclude",
+  slots: "THEME slots only, highest priority first: { label, count, ...filters (roles_any, effect_in, trigger_event + trigger_watches, cost_contains, type_line_contains, oracle_text_contains, category, cmc_max, max_price_usd), sort? }. Total about targets.theme_slots_budget cards. Don't add ramp/draw/removal/wipes/lands -- the server fills those to targets, counting theme cards that already do them.",
+  constraints: "only without a prompt_id: { colors, max_price_usd, bracket, theme, restrictions, build_style }",
+  review: "optional true = return an unsaved draft with card details instead of saving",
 };
-
 const PLAN_EXAMPLE = {
   commander: "Purphoros, God of the Forge",
-  exclude: [{ cost_contains: { kind: "Sac", arg: "Creature" } }, { trigger_event: "dies", trigger_watches: { type: "Creature" } }],
+  deck_name: "Purphoros Burn", wincon_summary: "Every creature that enters pings opponents; go wide and burn them out.", general_strategy: "Ramp early, flood the board with cheap creatures and token makers, protect Purphoros.", bracket_estimate: "Bracket 2 (Core)",
+  exclude: [{ cost_contains: { kind: "Sac", arg: "Creature" } }],
   slots: [
-    { label: "etb payoffs", count: 6, trigger_event: "etb", trigger_watches: { type: "Creature", modifier: "YouCtrl" }, effect_in: ["DealDamage"] },
-    { label: "token makers", count: 12, roles_any: ["token_generator"], cmc_max: 4 },
+    { label: "etb payoffs", count: 7, trigger_event: "etb", trigger_watches: { type: "Creature", modifier: "YouCtrl" }, effect_in: ["DealDamage"] },
+    { label: "token makers", count: 14, roles_any: ["token_generator"], cmc_max: 4 },
     { label: "anthems", count: 4, effect_in: ["PumpAll"] },
-    { label: "ramp", count: 10, roles_any: ["mana_rock", "mana_dork", "land_ramp"], cmc_max: 3 },
-    { label: "draw", count: 9, roles_any: ["card_draw"] },
-    { label: "removal", count: 8, roles_any: ["removal", "mass_removal"] },
-    { label: "utility lands", count: 6, category: "Land" },
-    { label: "flex", count: 14, category: "Creature", cmc_max: 3, sort: "varied" },
   ],
-  basic_lands: { Mountain: 30 },
-  note: "6+12+4+10+9+8+6+14 = 69 + 30 basics + 1 commander = 100",
+  note: "25 theme cards -- the server adds ramp, draw, removal, wipes, types and lands to exactly 100 and saves.",
 };
 
 const IDEA_EXAMPLES = [
@@ -246,16 +242,16 @@ const BUDGET_WORDS = {
 };
 
 const INSTRUCTIONS = [
-  "0. Defaults: no format named = Commander (say so). If the user said 'just build it' or gave enough to go on, fill gaps with stated defaults (budget_words) instead of asking -- open your reply with what you assumed so they can correct it.",
-  "1. If `missing` is non-empty and you can't reasonably default it, ask ONCE, all questions together.",
-  "1b. No commander (none given, or you passed commander: null): pick from `commander_candidates` -- read each one's abilities and `rewards`, choose the one that best fits the colors/budget/restrictions, and tell the user why plus one alternative. Want different options? Call deck_plan_guide again with commander: null (candidates reshuffle every call).",
-  "1c. No theme given: build around what the commander `rewards` -- name the direction you chose.",
-  "2. Translate `constraints.restrictions` into filters (idea_examples) -- slot filters, or deck-wide `exclude`.",
-  "3. Design the deck by role with slot counts that sum EXACTLY to the deck size, using composition_targets as the baseline. Order slots by priority (theme payoffs first, lands last).",
-  "4. build_style 'original': build theme slots from effect combinations (what cards produce vs what triggers them) -- don't use query_synergies/query_combos, web search, or remembered meta lists. 'community': you may add sort: 'synergy' slots and known combos when use_synergies/use_combos allow.",
-  "5. Call fill_deck_plan ONCE. It returns picks + alternates per slot, shortfalls, price, curve and role counts.",
-  "6. Review the picks (abilities/makes_tokens make synergies visible). Then call validate_and_submit ONCE with { draft_id, swaps, submit: true, deck_name, wincon_summary, general_strategy, bracket_estimate }. Don't retype the decklist.",
-  "7. Edits (deck_id given): use edit_deck in ONE call -- remove/add by name, add_search for server-picked cards (the deck's colors/budget/restrictions apply automatically), constraints to change a rule, commander to swap commander while keeping cards that still fit. For a rebuild around a new commander, call deck_plan_guide with deck_id and commander: null, pick one, write a new plan, fill_deck_plan, then validate_and_submit with the draft_id AND deck_id to overwrite the same deck.",
+  "0. No format named = Commander. If the user said 'just build it' or gave enough, fill gaps with defaults (budget_words) instead of asking, and open your reply with what you assumed.",
+  "1. Ask ONCE (all questions together) only if `missing` has something you can't reasonably default.",
+  "1b. No commander: pick from commander_candidates by abilities and `rewards` vs colors/budget/theme; say why plus one alternative. commander: null reshuffles candidates.",
+  "1c. Build toward constraints.theme; if there's none, toward what the commander `rewards` -- name the direction.",
+  "2. constraints.restrictions -> deck-wide `exclude` (archetypes.<name>.exclude for 'no <archetype>'); theme -> slot filters (idea_examples).",
+  "3. Write THEME slots only (~targets.theme_slots_budget cards): payoffs, enablers, synergy pieces, highest priority first. The server fills ramp, draw, removal, wipes, card types and lands to `targets` (the user's sliders when targets.source is 'user').",
+  "4. build_style 'original': theme from effect combinations (what cards produce vs what triggers them), no query_synergies/query_combos/meta lists. 'community': sort: 'synergy' slots and known combos are OK when allowed.",
+  "5. Call fill_deck_plan ONCE with the slots + deck_name, wincon_summary, general_strategy, bracket_estimate. It builds and SAVES the deck and returns the link. If it comes back saved: false, fix the warnings with validate_and_submit({ draft_id, swaps, submit: true }).",
+  "6. Reply in under ~100 words: commander, the plan in one line, price vs budget, the link. Offer edit_deck for changes.",
+  "7. Edits: edit_deck in ONE call (remove/add by name, add_search, constraints, commander swap). A rebuild prompt (mode 'rebuild') = steps 3-6 with the same prompt_id -- the deck is overwritten in place.",
 ];
 
 export {

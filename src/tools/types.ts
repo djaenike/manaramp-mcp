@@ -85,6 +85,11 @@ interface McpContext {
    *  the-preference reasoning). Falls back to 'most_recent' when absent, same default manaramp's own
    *  getPreferredPrinting uses. */
   getPreferredPrintingPreference?: () => Promise<PreferredPrinting>;
+  /** Called after a tool saves a deck (2026-09-28) -- manaramp's /mcp route passes a callback that
+   *  recomputes and stores the deck's stats (price per source, card types, what it does, curve), the
+   *  same function every website-side edit runs, so AI saves and browser edits stay identical.
+   *  Optional: absent under local/index.ts's stdio bootstrap (deck tools proxy to remote there). */
+  onDeckSaved?: (deckId: string) => Promise<void>;
 }
 
 interface ToolDefinition<Shape extends ZodRawShape = ZodRawShape> {

@@ -28,6 +28,7 @@ declare const inputSchema: {
     colors: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     max_price_usd: z.ZodOptional<z.ZodNumber>;
     all_effects: z.ZodOptional<z.ZodBoolean>;
+    detail: z.ZodOptional<z.ZodEnum<["compact", "full"]>>;
 };
 declare const deckPlanGuideTool: ToolDefinition<typeof inputSchema>;
 
