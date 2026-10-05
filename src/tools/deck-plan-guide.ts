@@ -16,7 +16,7 @@
  * Supersedes format_guidelines for building (that tool stays for bracket lookups).
  */
 import { z } from "zod";
-import { getDeckPrompt, constraintsOf } from "../functions/query/deck-prompts.js";
+import { getDeckPrompt, constraintsOf, promptDeckId, promptNotFoundMessage } from "../functions/query/deck-prompts.js";
 import { getDeckDoc } from "../functions/query/decks.js";
 import { queryCards, type CardSummary } from "../functions/query/cards.js";
 import { findCandidates } from "../functions/query/candidates.js";
@@ -78,8 +78,9 @@ const deckPlanGuideTool: ToolDefinition<typeof inputSchema> = {
 
     // --- context: prompt, existing deck, or chat ---
     const prompt = args.prompt_id ? await getDeckPrompt(ctx.writeDb, args.prompt_id, ctx.ownerUserId) : null;
-    if (args.prompt_id && !prompt) return text(`No deck prompt '#${args.prompt_id.replace(/^#/, "")}' on this account -- check the id, or continue without one.`);
-    const deckIdArg = args.deck_id ?? prompt?.deck_id ?? null;
+    if (args.prompt_id && !prompt) return text(await promptNotFoundMessage(ctx.writeDb, args.prompt_id, ctx.ownerUserId, (await ctx.getAccountLabel?.()) ?? null));
+    // A prompt's deck that's since been deleted (cleaned-up placeholder) is just a new build.
+    const deckIdArg = args.deck_id ?? (await promptDeckId(ctx.writeDb, prompt, ctx.ownerUserId));
     const deck = deckIdArg ? await getDeckDoc(ctx.writeDb, { deck_id: deckIdArg }) : null;
     if (deckIdArg && (!deck || deck.owner_user_id !== ctx.ownerUserId)) return text(`No deck '${deckIdArg}' on this account.`);
 
@@ -166,7 +167,8 @@ const deckPlanGuideTool: ToolDefinition<typeof inputSchema> = {
     const bracket = constraints.bracket;
 
     return text({
-      mode: deck ? (prompt?.deck_id ? "rebuild" : "edit") : "new",
+      // An empty deck (the website's placeholder for a new prompt, 2026-10-04) is a new build, not a rebuild.
+      mode: deck && deck.cards.length > 0 ? (prompt?.deck_id ? "rebuild" : "edit") : "new",
       format,
       rules,
       validate_supported: rules.validate_supported

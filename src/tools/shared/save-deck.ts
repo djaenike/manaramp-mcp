@@ -8,7 +8,7 @@
  */
 import { getDeckDoc, type DeckDoc } from "../../functions/query/decks.js";
 import { pushDeck } from "../../functions/push/deck.js";
-import { markPromptBuilt, type DeckPromptConstraints } from "../../functions/query/deck-prompts.js";
+import { getDeckPrompt, markPromptBuilt, promptDeckId, type DeckPromptConstraints } from "../../functions/query/deck-prompts.js";
 import { analyzeDecklist, type DeckAnalysis } from "./deck-analysis.js";
 import type { McpContext } from "../types.js";
 
@@ -37,11 +37,16 @@ type SaveDeckResult =
 async function saveDecklist(ctx: McpContext, input: SaveDeckInput): Promise<SaveDeckResult> {
   const priceSource = (await ctx.getPriceSourcePreference?.()) ?? "cardkingdom";
 
+  // No explicit deck_id but the list came from a prompt (2026-10-04): save into the prompt's own deck
+  // (its rebuild target, or the website's empty placeholder) when it still exists. Without this, a
+  // validate_and_submit of an unsaved fill_deck_plan draft only hit that deck if the model remembered
+  // to pass deck_id -- otherwise it made a SECOND deck and left the placeholder empty.
+  const deckId = input.deck_id ?? (input.prompt_id ? await promptDeckId(ctx.writeDb, await getDeckPrompt(ctx.writeDb, input.prompt_id, ctx.ownerUserId), ctx.ownerUserId) : null);
   let existingDeck: DeckDoc | null = null;
-  if (input.deck_id) {
-    existingDeck = await getDeckDoc(ctx.writeDb, { deck_id: input.deck_id });
-    if (!existingDeck) return { saved: false, error: `No deck found with deck_id '${input.deck_id}'.`, priceSource };
-    if (existingDeck.owner_user_id !== ctx.ownerUserId) return { saved: false, error: `deck_id '${input.deck_id}' isn't owned by this account.`, priceSource };
+  if (deckId) {
+    existingDeck = await getDeckDoc(ctx.writeDb, { deck_id: deckId });
+    if (!existingDeck) return { saved: false, error: `No deck found with deck_id '${deckId}'.`, priceSource };
+    if (existingDeck.owner_user_id !== ctx.ownerUserId) return { saved: false, error: `deck_id '${deckId}' isn't owned by this account.`, priceSource };
   }
 
   let analysis: DeckAnalysis;

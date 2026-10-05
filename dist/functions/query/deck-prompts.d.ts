@@ -42,8 +42,10 @@ interface DeckPromptDoc extends DeckPromptConstraints {
     status: "pending" | "built" | "expired";
     deck_ids: string[];
     source?: "website" | "chat";
-    /** Set when the prompt REBUILDS an existing deck ("Edit with AI", 2026-09-28) -- the build
-     *  overwrites that deck instead of creating a new one. */
+    /** The deck this prompt's build saves into, in place: the deck being rebuilt ("Edit with AI",
+     *  2026-09-28), or -- for a new Commander deck from the website (2026-10-03) -- the empty
+     *  placeholder deck made with the prompt, so the user can watch it fill in. Cleared by manaramp if
+     *  that placeholder is cleaned up unused. */
     deck_id?: string | null;
     created_at: Date;
     updated_at: Date;
@@ -57,6 +59,17 @@ declare function createChatDeckPrompt(db: Db, ownerUserId: string, input: {
     commander: DeckPromptDoc["commander"];
     constraints: DeckPromptConstraints;
 }): Promise<string>;
+/** The prompt's target deck id, but only if that deck still exists and belongs to the caller
+ *  (2026-10-04). A placeholder can be cleaned up or deleted by the user before the prompt is run --
+ *  then the build just makes a new deck instead of failing with "No deck '...'". */
+declare function promptDeckId(db: Db, prompt: DeckPromptDoc | null, ownerUserId: string): Promise<string | null>;
+/** What to tell the model when a prompt id doesn't resolve for this account (2026-10-04). The
+ *  common real case: the user made the prompt signed in to one Manaramp account on the website, but
+ *  this assistant is connected to ANOTHER. Previously the model was told to "continue without one",
+ *  so it built on the connected account while the website's placeholder deck sat empty on the
+ *  other -- now it's told to stop and explain. Only says the prompt exists elsewhere; never reveals
+ *  anything about the other account. */
+declare function promptNotFoundMessage(db: Db, id: string, ownerUserId: string, accountLabel: string | null): Promise<string>;
 declare function markPromptBuilt(db: Db, id: string, deckId: string): Promise<void>;
 
-export { type DeckPromptConstraints, type DeckPromptDoc, constraintsOf, createChatDeckPrompt, getDeckPrompt, markPromptBuilt };
+export { type DeckPromptConstraints, type DeckPromptDoc, constraintsOf, createChatDeckPrompt, getDeckPrompt, markPromptBuilt, promptDeckId, promptNotFoundMessage };

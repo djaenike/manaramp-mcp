@@ -43,6 +43,20 @@ async function createChatDeckPrompt(db, ownerUserId, input) {
   });
   return id;
 }
+async function promptDeckId(db, prompt, ownerUserId) {
+  if (!prompt?.deck_id) return null;
+  const deck = await db.collection("decks").findOne({ _id: prompt.deck_id, owner_user_id: ownerUserId }, { projection: { _id: 1 } });
+  return deck ? deck._id : null;
+}
+async function promptNotFoundMessage(db, id, ownerUserId, accountLabel) {
+  const cleanId = id.replace(/^#/, "").trim().toLowerCase();
+  const exists = await db.collection("deck_prompts").findOne({ _id: cleanId }, { projection: { owner_user_id: 1 } });
+  if (exists && exists.owner_user_id !== ownerUserId) {
+    const who = accountLabel ? ` (${accountLabel})` : "";
+    return `Deck prompt '#${cleanId}' was made on a different Manaramp account than the one this assistant is connected to${who}. Do NOT build the deck and do not continue without the prompt -- that would put the deck on the wrong account. Tell the user briefly: this assistant is signed in to Manaramp as ${accountLabel ?? "a different account"}; either sign in to manaramp.com with that account and create the prompt again, or reconnect the assistant's Manaramp connector to the account that made the prompt.`;
+  }
+  return `No deck prompt '#${cleanId}' exists -- check the id with the user, or build from what they said in chat instead.`;
+}
 async function markPromptBuilt(db, id, deckId) {
   await db.collection("deck_prompts").updateOne({ _id: id }, { $set: { status: "built", updated_at: /* @__PURE__ */ new Date() }, $addToSet: { deck_ids: deckId } });
 }
@@ -50,5 +64,7 @@ export {
   constraintsOf,
   createChatDeckPrompt,
   getDeckPrompt,
-  markPromptBuilt
+  markPromptBuilt,
+  promptDeckId,
+  promptNotFoundMessage
 };

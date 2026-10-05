@@ -1,14 +1,15 @@
 import { getDeckDoc } from "../../functions/query/decks.js";
 import { pushDeck } from "../../functions/push/deck.js";
-import { markPromptBuilt } from "../../functions/query/deck-prompts.js";
+import { getDeckPrompt, markPromptBuilt, promptDeckId } from "../../functions/query/deck-prompts.js";
 import { analyzeDecklist } from "./deck-analysis.js";
 async function saveDecklist(ctx, input) {
   const priceSource = await ctx.getPriceSourcePreference?.() ?? "cardkingdom";
+  const deckId = input.deck_id ?? (input.prompt_id ? await promptDeckId(ctx.writeDb, await getDeckPrompt(ctx.writeDb, input.prompt_id, ctx.ownerUserId), ctx.ownerUserId) : null);
   let existingDeck = null;
-  if (input.deck_id) {
-    existingDeck = await getDeckDoc(ctx.writeDb, { deck_id: input.deck_id });
-    if (!existingDeck) return { saved: false, error: `No deck found with deck_id '${input.deck_id}'.`, priceSource };
-    if (existingDeck.owner_user_id !== ctx.ownerUserId) return { saved: false, error: `deck_id '${input.deck_id}' isn't owned by this account.`, priceSource };
+  if (deckId) {
+    existingDeck = await getDeckDoc(ctx.writeDb, { deck_id: deckId });
+    if (!existingDeck) return { saved: false, error: `No deck found with deck_id '${deckId}'.`, priceSource };
+    if (existingDeck.owner_user_id !== ctx.ownerUserId) return { saved: false, error: `deck_id '${deckId}' isn't owned by this account.`, priceSource };
   }
   let analysis;
   try {

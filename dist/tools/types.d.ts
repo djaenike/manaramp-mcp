@@ -91,6 +91,10 @@ interface McpContext {
      *  same function every website-side edit runs, so AI saves and browser edits stay identical.
      *  Optional: absent under local/index.ts's stdio bootstrap (deck tools proxy to remote there). */
     onDeckSaved?: (deckId: string) => Promise<void>;
+    /** "Name (email)" of the calling account (2026-10-04) -- used to tell the user which Manaramp
+     *  account their assistant is connected as when a pasted prompt belongs to a different one.
+     *  Optional: absent over local stdio. */
+    getAccountLabel?: () => Promise<string | null>;
 }
 interface ToolDefinition<Shape extends ZodRawShape = ZodRawShape> {
     name: string;

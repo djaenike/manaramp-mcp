@@ -24,7 +24,7 @@ import { filterShape } from "./shared/filter-shape.js";
 import { queryCards, type QueryCardsFilters, type CardSummary } from "../functions/query/cards.js";
 import { findCandidates, seededShuffle, type Candidate } from "../functions/query/candidates.js";
 import { toPlanCard, toBriefPlanCard } from "../functions/query/card-view.js";
-import { getDeckPrompt, constraintsOf, createChatDeckPrompt, type DeckPromptConstraints } from "../functions/query/deck-prompts.js";
+import { getDeckPrompt, constraintsOf, createChatDeckPrompt, promptDeckId, promptNotFoundMessage, type DeckPromptConstraints } from "../functions/query/deck-prompts.js";
 import { saveDraft, type DraftSlot } from "../functions/push/deck-drafts.js";
 import { querySynergies } from "../functions/query/synergies.js";
 import { FORMAT_RULES } from "../functions/reference/deck-plan-guide-data.js";
@@ -115,7 +115,7 @@ const fillDeckPlanTool: ToolDefinition<typeof inputSchema> = {
     // --- constraints: the stored prompt, or inline (saved as a new chat prompt) ---
     let promptId = args.prompt_id ? args.prompt_id.replace(/^#/, "").trim().toLowerCase() : null;
     const prompt = promptId ? await getDeckPrompt(ctx.writeDb, promptId, ctx.ownerUserId) : null;
-    if (promptId && !prompt) return text(`No deck prompt '#${promptId}' on this account.`);
+    if (promptId && !prompt) return text(await promptNotFoundMessage(ctx.writeDb, promptId, ctx.ownerUserId, (await ctx.getAccountLabel?.()) ?? null));
     const format = (prompt?.format ?? args.format ?? "commander").toLowerCase();
     const rules = FORMAT_RULES[format];
     if (!rules) return text(`Unknown format '${format}'. Use one of: ${Object.keys(FORMAT_RULES).join(", ")}.`);
@@ -131,7 +131,7 @@ const fillDeckPlanTool: ToolDefinition<typeof inputSchema> = {
           use_synergies: !!args.constraints?.use_synergies,
           use_combos: !!args.constraints?.use_combos,
         };
-    const deckId = args.deck_id ?? prompt?.deck_id ?? null;
+    const deckId = args.deck_id ?? (await promptDeckId(ctx.writeDb, prompt, ctx.ownerUserId));
 
     // --- commander ---
     const commanderName = args.commander ?? prompt?.commander?.name ?? null;
