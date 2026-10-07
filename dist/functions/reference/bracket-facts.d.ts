@@ -1,6 +1,8 @@
 import { Db } from 'mongodb';
 import { ComboResult } from '../query/combos.js';
 import { CardSummary } from '../query/cards.js';
+import '../../tools/types.js';
+import 'zod';
 
 /**
  * functions/reference/bracket-facts.ts (moved from sub-tools/bracket/facts.ts, 2026-09-17, sixth

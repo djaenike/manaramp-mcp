@@ -54,6 +54,8 @@
  */
 
 import type { Db } from "mongodb";
+import type { PriceSource } from "../../tools/types.js";
+import { DISPLAY_PRICE_SOURCES, DEFAULT_PRICE_SOURCE, priceFallbackOrder } from "../reference/price-sources.js";
 
 /** One clause of a Forge value: a Type plus its dot-then-plus-joined modifiers (AND). Comma-joined
  *  alternatives in the raw Forge string become separate clauses (OR). */
@@ -177,6 +179,8 @@ interface MarketDataEntry {
   scryfall_id: string;
   cardkingdom: { price_usd: number | null; is_foil: boolean; fetched_at: Date } | null;
   manapool: { price_usd: number | null; is_foil: boolean; fetched_at: Date } | null;
+  /** 2026-10-06 -- optional until a card's next pricing run. */
+  tcgplayer?: { price_usd: number | null; is_foil: boolean; fetched_at: Date } | null;
 }
 
 interface MongoCardDoc {
@@ -377,11 +381,15 @@ function pickDefaultPrinting(printings: MongoCardDoc["scryfall_printings"], pinn
   return best;
 }
 
-function resolvePriceForEntry(entry: MarketDataEntry | undefined, priceSource: "cardkingdom" | "manapool"): number | null {
+/** Preferred store first, then the other displayed store -- never Card Kingdom as a fallback
+ *  (functions/reference/price-sources.ts). */
+function resolvePriceForEntry(entry: MarketDataEntry | undefined, priceSource: PriceSource): number | null {
   if (!entry) return null;
-  const preferred = priceSource === "manapool" ? entry.manapool : entry.cardkingdom;
-  const other = priceSource === "manapool" ? entry.cardkingdom : entry.manapool;
-  return preferred?.price_usd ?? other?.price_usd ?? null;
+  for (const store of priceFallbackOrder(priceSource)) {
+    const price = entry[store]?.price_usd;
+    if (price != null) return price;
+  }
+  return null;
 }
 
 /** Whichever printing resolves to the lowest price at `priceSource` (2026-09-23) -- same logic as
@@ -391,7 +399,7 @@ function resolvePriceForEntry(entry: MarketDataEntry | undefined, priceSource: "
 function pickCheapestPrinting(
   printings: MongoCardDoc["scryfall_printings"],
   marketData: MarketDataEntry[],
-  priceSource: "cardkingdom" | "manapool",
+  priceSource: PriceSource,
   pinnedScryfallId?: string
 ): MongoCardDoc["scryfall_printings"][number] | null {
   if (pinnedScryfallId) {
@@ -416,7 +424,7 @@ function pickCheapestPrinting(
 function pickPreferredPrinting(
   printings: MongoCardDoc["scryfall_printings"],
   marketData: MarketDataEntry[],
-  priceSource: "cardkingdom" | "manapool",
+  priceSource: PriceSource,
   preferredPrinting: "most_recent" | "cheapest",
   pinnedScryfallId?: string
 ): MongoCardDoc["scryfall_printings"][number] | null {
@@ -499,7 +507,7 @@ function enrichEffectsWithTokens(effects: Effect[], tokensById: Map<string, Toke
 
 function toSummary(
   doc: MongoCardDoc,
-  priceSource: "cardkingdom" | "manapool",
+  priceSource: PriceSource,
   tokensById: Map<string, TokenDescriptor>,
   pinnedScryfallId?: string,
   preferredPrinting: "most_recent" | "cheapest" = "most_recent"
@@ -557,7 +565,7 @@ async function resolveTokenScripts(db: Db, docs: MongoCardDoc[]): Promise<Map<st
 async function finalize(
   db: Db,
   docs: MongoCardDoc[],
-  priceSource: "cardkingdom" | "manapool",
+  priceSource: PriceSource,
   pinned: (id: string) => string | undefined,
   preferredPrinting: "most_recent" | "cheapest" = "most_recent"
 ): Promise<CardSummary[]> {
@@ -644,7 +652,8 @@ function buildCardQuery(filters: QueryCardsFilters): Record<string, unknown> {
     // Any printing at or under the ceiling counts -- a card isn't excluded just because its
     // DEFAULT (most-recent) printing happens to be pricier than an older one.
     query.market_data = {
-      $elemMatch: { $or: [{ "cardkingdom.price_usd": { $lte: filters.max_price_usd } }, { "manapool.price_usd": { $lte: filters.max_price_usd } }] },
+      // Only the stores shown to users count toward a budget (2026-10-06) -- not Card Kingdom.
+      $elemMatch: { $or: DISPLAY_PRICE_SOURCES.map((store) => ({ [`${store}.price_usd`]: { $lte: filters.max_price_usd } })) },
     };
   }
 
@@ -713,7 +722,7 @@ function buildCardQuery(filters: QueryCardsFilters): Record<string, unknown> {
 async function queryCards(
   db: Db,
   filters: QueryCardsFilters,
-  priceSource: "cardkingdom" | "manapool" = "cardkingdom",
+  priceSource: PriceSource = DEFAULT_PRICE_SOURCE,
   preferredPrinting: "most_recent" | "cheapest" = "most_recent"
 ): Promise<CardSummary[]> {
   const pinned = (id: string) => filters.printing_preferences?.[id];

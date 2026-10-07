@@ -12,6 +12,8 @@
  */
 import type { Db } from "mongodb";
 import { buildCardQuery, type QueryCardsFilters } from "./cards.js";
+import type { PriceSource } from "../../tools/types.js";
+import { DEFAULT_PRICE_SOURCE, priceFallbackOrder } from "../reference/price-sources.js";
 
 interface Candidate {
   _id: string;
@@ -28,10 +30,11 @@ async function findCandidates(
   db: Db,
   filters: QueryCardsFilters,
   limit: number,
-  priceSource: "cardkingdom" | "manapool" = "cardkingdom",
+  priceSource: PriceSource = DEFAULT_PRICE_SOURCE,
   opts: { sample?: boolean; rankByPrintings?: boolean } = {}
 ): Promise<Candidate[]> {
-  const [first, second] = priceSource === "manapool" ? ["manapool", "cardkingdom"] : ["cardkingdom", "manapool"];
+  // Multi-argument $ifNull: the first store in fallback order that has a price for this printing.
+  const order = priceFallbackOrder(priceSource);
   return db
     .collection("cards")
     .aggregate<Candidate>([
@@ -64,7 +67,7 @@ async function findCandidates(
                   vars: {
                     m: { $first: { $filter: { input: { $ifNull: ["$market_data", []] }, as: "m", cond: { $eq: ["$$m.scryfall_id", "$$latest.scryfall_id"] } } } },
                   },
-                  in: { $ifNull: [`$$m.${first}.price_usd`, `$$m.${second}.price_usd`] },
+                  in: { $ifNull: order.map((store) => `$$m.${store}.price_usd`) },
                 },
               },
             },

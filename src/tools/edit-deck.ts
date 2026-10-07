@@ -57,7 +57,7 @@ const editDeckTool: ToolDefinition<typeof inputSchema> = {
   inputSchema,
   handler: async (args, ctx) => {
     const text = (body: unknown) => ({ content: [{ type: "text" as const, text: typeof body === "string" ? body : JSON.stringify(body) }] });
-    const priceSource = (await ctx.getPriceSourcePreference?.()) ?? "cardkingdom";
+    const priceSource = (await ctx.getPriceSourcePreference?.()) ?? "tcgplayer";
     const preferredPrinting = (await ctx.getPreferredPrintingPreference?.()) ?? "most_recent";
 
     const deck = await getDeckDoc(ctx.writeDb, { deck_id: args.deck_id });

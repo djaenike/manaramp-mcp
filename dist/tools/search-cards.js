@@ -94,7 +94,7 @@ const queryCardsTool = {
   description: "Look up real cards: exact names (batch), ids, or filtered searches (roles, Forge effects, triggers, costs, type, colors, mana value, price, legality, text). Building a whole deck? Use fill_deck_plan instead -- it searches, picks and saves in one call. Several kinds of cards at once: put them in ONE call via `searches`. Pass color_identity_subset_of = the commander's colors so off-color cards never come back.",
   inputSchema,
   handler: async (args, ctx) => {
-    const priceSource = await ctx.getPriceSourcePreference?.() ?? "cardkingdom";
+    const priceSource = await ctx.getPriceSourcePreference?.() ?? "tcgplayer";
     const preferredPrinting = await ctx.getPreferredPrintingPreference?.() ?? "most_recent";
     const { detail, searches, include_draft_stats, ...filters } = args;
     const shape = (c) => detail === "full" ? c : detail === "brief" ? toBrief(c) : toCompact(c, include_draft_stats === true);

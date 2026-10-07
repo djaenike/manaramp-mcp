@@ -1,3 +1,4 @@
+import { DISPLAY_PRICE_SOURCES, DEFAULT_PRICE_SOURCE, priceFallbackOrder } from "../reference/price-sources.js";
 function pickDefaultPrinting(printings, pinnedScryfallId) {
   if (pinnedScryfallId) {
     const pinned = printings.find((p) => p.scryfall_id === pinnedScryfallId);
@@ -12,9 +13,11 @@ function pickDefaultPrinting(printings, pinnedScryfallId) {
 }
 function resolvePriceForEntry(entry, priceSource) {
   if (!entry) return null;
-  const preferred = priceSource === "manapool" ? entry.manapool : entry.cardkingdom;
-  const other = priceSource === "manapool" ? entry.cardkingdom : entry.manapool;
-  return preferred?.price_usd ?? other?.price_usd ?? null;
+  for (const store of priceFallbackOrder(priceSource)) {
+    const price = entry[store]?.price_usd;
+    if (price != null) return price;
+  }
+  return null;
 }
 function pickCheapestPrinting(printings, marketData, priceSource, pinnedScryfallId) {
   if (pinnedScryfallId) {
@@ -192,7 +195,8 @@ function buildCardQuery(filters) {
   }
   if (filters.max_price_usd !== void 0) {
     query.market_data = {
-      $elemMatch: { $or: [{ "cardkingdom.price_usd": { $lte: filters.max_price_usd } }, { "manapool.price_usd": { $lte: filters.max_price_usd } }] }
+      // Only the stores shown to users count toward a budget (2026-10-06) -- not Card Kingdom.
+      $elemMatch: { $or: DISPLAY_PRICE_SOURCES.map((store) => ({ [`${store}.price_usd`]: { $lte: filters.max_price_usd } })) }
     };
   }
   if (filters.effect_in?.length || filters.trigger_kind || filters.effect_param_contains || filters.trigger_event || filters.trigger_watches || filters.cost_contains) {
@@ -239,7 +243,7 @@ function buildCardQuery(filters) {
   }
   return query;
 }
-async function queryCards(db, filters, priceSource = "cardkingdom", preferredPrinting = "most_recent") {
+async function queryCards(db, filters, priceSource = DEFAULT_PRICE_SOURCE, preferredPrinting = "most_recent") {
   const pinned = (id) => filters.printing_preferences?.[id];
   if (filters.names?.length) {
     const regexes = filters.names.map((n) => new RegExp(`^${escapeRegex(n)}$`, "i"));

@@ -69,60 +69,60 @@ declare const inputSchema: {
         sort: z.ZodOptional<z.ZodEnum<["varied", "cmc", "price"]>>;
     }, "strip", z.ZodTypeAny, {
         count: number;
-        sort?: "varied" | "cmc" | "price" | undefined;
+        sort?: "cmc" | "varied" | "price" | undefined;
+        category?: string | undefined;
         max_price_usd?: number | undefined;
-        roles_any?: string[] | undefined;
         effect_in?: string[] | undefined;
-        effects_all?: string[] | undefined;
-        trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
+        roles_any?: string[] | undefined;
         trigger_event?: string | undefined;
-        trigger_watches?: {
-            type?: string | undefined;
-            modifier?: string | undefined;
-        } | undefined;
-        effect_param_contains?: {
-            key: string;
-            value_contains: string;
-        } | undefined;
         cost_contains?: {
             kind: string;
             arg?: string | undefined;
         } | undefined;
+        effects_all?: string[] | undefined;
+        effect_param_contains?: {
+            key: string;
+            value_contains: string;
+        } | undefined;
+        trigger_watches?: {
+            type?: string | undefined;
+            modifier?: string | undefined;
+        } | undefined;
+        cmc_max?: number | undefined;
+        trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
         type_line_contains?: string | undefined;
         name_contains?: string | undefined;
         oracle_text_contains?: string | undefined;
-        category?: string | undefined;
         colors_include?: string[] | undefined;
         cmc_min?: number | undefined;
-        cmc_max?: number | undefined;
     }, {
         count: number;
-        sort?: "varied" | "cmc" | "price" | undefined;
+        sort?: "cmc" | "varied" | "price" | undefined;
+        category?: string | undefined;
         max_price_usd?: number | undefined;
-        roles_any?: string[] | undefined;
         effect_in?: string[] | undefined;
-        effects_all?: string[] | undefined;
-        trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
+        roles_any?: string[] | undefined;
         trigger_event?: string | undefined;
-        trigger_watches?: {
-            type?: string | undefined;
-            modifier?: string | undefined;
-        } | undefined;
-        effect_param_contains?: {
-            key: string;
-            value_contains: string;
-        } | undefined;
         cost_contains?: {
             kind: string;
             arg?: string | undefined;
         } | undefined;
+        effects_all?: string[] | undefined;
+        effect_param_contains?: {
+            key: string;
+            value_contains: string;
+        } | undefined;
+        trigger_watches?: {
+            type?: string | undefined;
+            modifier?: string | undefined;
+        } | undefined;
+        cmc_max?: number | undefined;
+        trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
         type_line_contains?: string | undefined;
         name_contains?: string | undefined;
         oracle_text_contains?: string | undefined;
-        category?: string | undefined;
         colors_include?: string[] | undefined;
         cmc_min?: number | undefined;
-        cmc_max?: number | undefined;
     }>, "many">>;
     constraints: z.ZodOptional<z.ZodObject<{
         max_price_usd: z.ZodOptional<z.ZodNullable<z.ZodNumber>>;

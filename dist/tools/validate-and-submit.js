@@ -85,7 +85,7 @@ const validateAndSubmitTool = {
       deckIdToReturn = result.deck_id;
       deckUrl = result.deck_url;
     } else {
-      priceSource = await ctx.getPriceSourcePreference?.() ?? "cardkingdom";
+      priceSource = await ctx.getPriceSourcePreference?.() ?? "tcgplayer";
       try {
         analysis = await analyzeDecklist(ctx.readDb, decklist_text, priceSource);
       } catch (e) {

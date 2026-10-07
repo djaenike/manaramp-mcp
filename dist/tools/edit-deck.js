@@ -26,7 +26,7 @@ const editDeckTool = {
   inputSchema,
   handler: async (args, ctx) => {
     const text = (body) => ({ content: [{ type: "text", text: typeof body === "string" ? body : JSON.stringify(body) }] });
-    const priceSource = await ctx.getPriceSourcePreference?.() ?? "cardkingdom";
+    const priceSource = await ctx.getPriceSourcePreference?.() ?? "tcgplayer";
     const preferredPrinting = await ctx.getPreferredPrintingPreference?.() ?? "most_recent";
     const deck = await getDeckDoc(ctx.writeDb, { deck_id: args.deck_id });
     if (!deck) return text(`No deck with deck_id '${args.deck_id}'.`);

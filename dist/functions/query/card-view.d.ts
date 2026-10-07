@@ -1,5 +1,7 @@
 import { Effect, CardSummary } from './cards.js';
 import 'mongodb';
+import '../../tools/types.js';
+import 'zod';
 
 /**
  * functions/query/card-view.ts

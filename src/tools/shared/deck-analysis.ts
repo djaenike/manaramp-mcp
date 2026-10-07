@@ -13,6 +13,7 @@
  */
 
 import type { Db } from "mongodb";
+import type { PriceSource } from "../types.js";
 import { queryCards } from "../../functions/query/cards.js";
 import { validateDeck, type DeckValidationResult } from "../../functions/reference/deck-validation.js";
 import { gatherDeckFacts, type DeckFacts } from "../../functions/reference/bracket-facts.js";
@@ -30,12 +31,12 @@ interface DeckAnalysis {
 
 /** Throws a plain Error with a user-facing message on a decklist that couldn't even be parsed --
  *  both callers turn that into their own tool-response shape rather than a thrown exception
- *  reaching the MCP transport. `priceSource` (2026-09-21, defaults to 'cardkingdom' -- both callers
+ *  reaching the MCP transport. `priceSource` (2026-09-21, defaults to 'tcgplayer' since 2026-10-06 -- both callers
  *  resolve it from ctx.getPriceSourcePreference?.() and pass it in, falling back the same way for a
  *  legacy account with no preference saved or a local-stdio call with no such getter at all -- see
  *  tools/types.ts's McpContext for the full reasoning) decides which market priceTotal normalizes
  *  to, via queryCards's own priceSource param. */
-async function analyzeDecklist(readDb: Db, decklist_text: string, priceSource: "cardkingdom" | "manapool" = "cardkingdom"): Promise<DeckAnalysis> {
+async function analyzeDecklist(readDb: Db, decklist_text: string, priceSource: PriceSource = "tcgplayer"): Promise<DeckAnalysis> {
   const { commanderNames, deckEntries } = parseDecklistText(decklist_text);
   if (!commanderNames.length || !deckEntries.length) {
     throw new Error("Couldn't parse a commander and deck from the decklist -- check the 'Commander' / 'Deck' section headers and '<qty> <name>' line formatting.");

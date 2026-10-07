@@ -37,7 +37,7 @@ const deckPlanGuideTool = {
   inputSchema,
   handler: async (args, ctx) => {
     const text = (body) => ({ content: [{ type: "text", text: typeof body === "string" ? body : JSON.stringify(body) }] });
-    const priceSource = await ctx.getPriceSourcePreference?.() ?? "cardkingdom";
+    const priceSource = await ctx.getPriceSourcePreference?.() ?? "tcgplayer";
     const preferredPrinting = await ctx.getPreferredPrintingPreference?.() ?? "most_recent";
     const prompt = args.prompt_id ? await getDeckPrompt(ctx.writeDb, args.prompt_id, ctx.ownerUserId) : null;
     if (args.prompt_id && !prompt) return text(await promptNotFoundMessage(ctx.writeDb, args.prompt_id, ctx.ownerUserId, await ctx.getAccountLabel?.() ?? null));

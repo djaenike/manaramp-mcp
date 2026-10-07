@@ -1,5 +1,7 @@
 import { CardSummary } from '../query/cards.js';
 import 'mongodb';
+import '../../tools/types.js';
+import 'zod';
 
 /**
  * functions/reference/deck-validation.ts (renamed from sub-tools/deck-building/consistency.ts,

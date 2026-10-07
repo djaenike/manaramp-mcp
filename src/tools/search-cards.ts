@@ -180,10 +180,10 @@ const queryCardsTool: ToolDefinition<typeof inputSchema> = {
     "color_identity_subset_of = the commander's colors so off-color cards never come back.",
   inputSchema,
   handler: async (args, ctx) => {
-    // Falls back to 'cardkingdom'/'most_recent' for a legacy account with no preference saved yet,
+    // Falls back to 'tcgplayer'/'most_recent' for a legacy account with no preference saved yet,
     // AND for a local-stdio call where ctx has no such getter at all -- see tools/types.ts's
     // McpContext.
-    const priceSource = (await ctx.getPriceSourcePreference?.()) ?? "cardkingdom";
+    const priceSource = (await ctx.getPriceSourcePreference?.()) ?? "tcgplayer";
     const preferredPrinting = (await ctx.getPreferredPrintingPreference?.()) ?? "most_recent";
     const { detail, searches, include_draft_stats, ...filters } = args;
     const shape = (c: CardSummary) => (detail === "full" ? c : detail === "brief" ? toBrief(c) : toCompact(c, include_draft_stats === true));

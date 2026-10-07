@@ -1,5 +1,7 @@
 import { Db } from 'mongodb';
 import { QueryCardsFilters } from './cards.js';
+import { PriceSource } from '../../tools/types.js';
+import 'zod';
 
 /**
  * functions/query/candidates.ts
@@ -24,7 +26,7 @@ interface Candidate {
     printings?: number;
     price_usd: number | null;
 }
-declare function findCandidates(db: Db, filters: QueryCardsFilters, limit: number, priceSource?: "cardkingdom" | "manapool", opts?: {
+declare function findCandidates(db: Db, filters: QueryCardsFilters, limit: number, priceSource?: PriceSource, opts?: {
     sample?: boolean;
     rankByPrintings?: boolean;
 }): Promise<Candidate[]>;

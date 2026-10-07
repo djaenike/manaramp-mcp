@@ -35,11 +35,12 @@ interface McpToolResponse {
   content: Array<{ type: "text"; text: string }>;
 }
 
-/** 'cardkingdom' | 'manapool' -- which market a price normalizes to. Mirrors manaramp's own
- *  PriceSource type (src/lib/server/mcp-keys/index.ts) exactly; kept as a separate local literal
- *  union rather than importing it, same repo-boundary call as everything else in this file (manaramp
- *  doesn't depend on manaramp-mcp, and this package has no dependency back on manaramp either). */
-type PriceSource = "cardkingdom" | "manapool";
+/** 'tcgplayer' | 'manapool' | 'cardkingdom' -- which store a price comes from. Mirrors manaramp's
+ *  own PriceSource ($lib/price-sources.ts) exactly; kept as a separate local literal union rather
+ *  than importing it, same repo-boundary call as everything else in this file. tcgplayer added
+ *  2026-10-06 and is the default; manaramp's getPriceSource only ever hands back tcgplayer or
+ *  manapool (Card Kingdom isn't shown -- see functions/reference/price-sources.ts). */
+type PriceSource = "tcgplayer" | "manapool" | "cardkingdom";
 /** 'most_recent' | 'cheapest' -- which printing pickPreferredPrinting resolves to when a caller
  *  hasn't pinned a specific one. Mirrors manaramp's own PreferredPrinting type (src/lib/server/
  *  mcp-keys/index.ts) exactly, same repo-boundary local-literal-union call as PriceSource above. */
@@ -76,9 +77,8 @@ interface McpContext {
    *  rather than something exposed via readDb/writeDb. Optional for the identical reason too: absent
    *  under local/index.ts's stdio bootstrap, AND absent for any account that predates this
    *  preference existing (price_source: null in Mongo) -- every caller treats a missing/undefined
-   *  result the same way, falling back to 'cardkingdom' (this app's price displays already preferred
-   *  Card Kingdom before this preference existed, so that's not a behavior change for anyone who
-   *  hasn't touched the /settings toggle). */
+   *  result the same way, falling back to 'tcgplayer' (2026-10-06 -- was 'cardkingdom', which isn't
+   *  shown to users anymore). */
   getPriceSourcePreference?: () => Promise<PriceSource>;
   /** Lazily resolves this account's saved printing preference (2026-09-23, mirrors
    *  getPriceSourcePreference directly above -- same trust tier, same optional-for-stdio/predates-

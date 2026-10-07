@@ -3,7 +3,7 @@ import { pushDeck } from "../../functions/push/deck.js";
 import { getDeckPrompt, markPromptBuilt, promptDeckId } from "../../functions/query/deck-prompts.js";
 import { analyzeDecklist } from "./deck-analysis.js";
 async function saveDecklist(ctx, input) {
-  const priceSource = await ctx.getPriceSourcePreference?.() ?? "cardkingdom";
+  const priceSource = await ctx.getPriceSourcePreference?.() ?? "tcgplayer";
   const deckId = input.deck_id ?? (input.prompt_id ? await promptDeckId(ctx.writeDb, await getDeckPrompt(ctx.writeDb, input.prompt_id, ctx.ownerUserId), ctx.ownerUserId) : null);
   let existingDeck = null;
   if (deckId) {

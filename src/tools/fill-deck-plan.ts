@@ -108,7 +108,7 @@ const fillDeckPlanTool: ToolDefinition<typeof inputSchema> = {
     "size, applies colors/legality/budget/exclusions, saves, and returns the link with a compact summary.",
   inputSchema,
   handler: async (args, ctx) => {
-    const priceSource = (await ctx.getPriceSourcePreference?.()) ?? "cardkingdom";
+    const priceSource = (await ctx.getPriceSourcePreference?.()) ?? "tcgplayer";
     const preferredPrinting = (await ctx.getPreferredPrintingPreference?.()) ?? "most_recent";
     const text = (body: unknown) => ({ content: [{ type: "text" as const, text: typeof body === "string" ? body : JSON.stringify(body) }] });
 

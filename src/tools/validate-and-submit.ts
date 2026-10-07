@@ -33,7 +33,7 @@ import { analyzeDecklist, extractBracketNumber, toDecklistText } from "./shared/
 import { saveDecklist } from "./shared/save-deck.js";
 import { getDraft } from "../functions/push/deck-drafts.js";
 import type { DeckPromptConstraints } from "../functions/query/deck-prompts.js";
-import type { ToolDefinition } from "./types.js";
+import type { PriceSource, ToolDefinition } from "./types.js";
 
 const inputSchema = {
   draft_id: z.string().optional().describe("An unsaved fill_deck_plan draft to submit (with swaps)."),
@@ -132,11 +132,11 @@ const validateAndSubmitTool: ToolDefinition<typeof inputSchema> = {
       deckIdToReturn = result.deck_id;
       deckUrl = result.deck_url;
     } else {
-      // Falls back to 'cardkingdom' for a legacy account with no preference saved yet, AND for a
+      // Falls back to 'tcgplayer' for a legacy account with no preference saved yet, AND for a
       // local-stdio call where ctx has no such getter at all -- see tools/types.ts's McpContext.
-      priceSource = (await ctx.getPriceSourcePreference?.()) ?? "cardkingdom";
+      priceSource = (await ctx.getPriceSourcePreference?.()) ?? "tcgplayer";
       try {
-        analysis = await analyzeDecklist(ctx.readDb, decklist_text, priceSource as "cardkingdom" | "manapool");
+        analysis = await analyzeDecklist(ctx.readDb, decklist_text, priceSource as PriceSource);
       } catch (e: any) {
         return { content: [{ type: "text" as const, text: e.message }] };
       }

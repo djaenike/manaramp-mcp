@@ -1,6 +1,7 @@
 import { buildCardQuery } from "./cards.js";
-async function findCandidates(db, filters, limit, priceSource = "cardkingdom", opts = {}) {
-  const [first, second] = priceSource === "manapool" ? ["manapool", "cardkingdom"] : ["cardkingdom", "manapool"];
+import { DEFAULT_PRICE_SOURCE, priceFallbackOrder } from "../reference/price-sources.js";
+async function findCandidates(db, filters, limit, priceSource = DEFAULT_PRICE_SOURCE, opts = {}) {
+  const order = priceFallbackOrder(priceSource);
   return db.collection("cards").aggregate([
     { $match: buildCardQuery(filters) },
     // sample: a fresh random draw from ALL matches each call (commander suggestions reshuffle on
@@ -29,7 +30,7 @@ async function findCandidates(db, filters, limit, priceSource = "cardkingdom", o
                 vars: {
                   m: { $first: { $filter: { input: { $ifNull: ["$market_data", []] }, as: "m", cond: { $eq: ["$$m.scryfall_id", "$$latest.scryfall_id"] } } } }
                 },
-                in: { $ifNull: [`$$m.${first}.price_usd`, `$$m.${second}.price_usd`] }
+                in: { $ifNull: order.map((store) => `$$m.${store}.price_usd`) }
               }
             }
           }

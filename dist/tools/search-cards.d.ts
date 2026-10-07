@@ -74,71 +74,71 @@ declare const inputSchema: {
         limit: z.ZodOptional<z.ZodNumber>;
         label: z.ZodOptional<z.ZodString>;
     }, "strip", z.ZodTypeAny, {
+        category?: string | undefined;
+        arena_grp_ids?: number[] | undefined;
         max_price_usd?: number | undefined;
-        label?: string | undefined;
-        roles_any?: string[] | undefined;
+        limit?: number | undefined;
+        oracle_ids?: string[] | undefined;
         effect_in?: string[] | undefined;
-        effects_all?: string[] | undefined;
-        trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
+        roles_any?: string[] | undefined;
         trigger_event?: string | undefined;
-        trigger_watches?: {
-            type?: string | undefined;
-            modifier?: string | undefined;
-        } | undefined;
-        effect_param_contains?: {
-            key: string;
-            value_contains: string;
-        } | undefined;
         cost_contains?: {
             kind: string;
             arg?: string | undefined;
         } | undefined;
+        effects_all?: string[] | undefined;
+        effect_param_contains?: {
+            key: string;
+            value_contains: string;
+        } | undefined;
+        trigger_watches?: {
+            type?: string | undefined;
+            modifier?: string | undefined;
+        } | undefined;
+        cmc_max?: number | undefined;
+        names?: string[] | undefined;
+        label?: string | undefined;
+        trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
         type_line_contains?: string | undefined;
         name_contains?: string | undefined;
         oracle_text_contains?: string | undefined;
-        category?: string | undefined;
         colors_include?: string[] | undefined;
         cmc_min?: number | undefined;
-        cmc_max?: number | undefined;
-        names?: string[] | undefined;
-        oracle_ids?: string[] | undefined;
-        arena_grp_ids?: number[] | undefined;
         color_identity_subset_of?: string[] | undefined;
         legal_in?: string | undefined;
-        limit?: number | undefined;
     }, {
+        category?: string | undefined;
+        arena_grp_ids?: number[] | undefined;
         max_price_usd?: number | undefined;
-        label?: string | undefined;
-        roles_any?: string[] | undefined;
+        limit?: number | undefined;
+        oracle_ids?: string[] | undefined;
         effect_in?: string[] | undefined;
-        effects_all?: string[] | undefined;
-        trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
+        roles_any?: string[] | undefined;
         trigger_event?: string | undefined;
-        trigger_watches?: {
-            type?: string | undefined;
-            modifier?: string | undefined;
-        } | undefined;
-        effect_param_contains?: {
-            key: string;
-            value_contains: string;
-        } | undefined;
         cost_contains?: {
             kind: string;
             arg?: string | undefined;
         } | undefined;
+        effects_all?: string[] | undefined;
+        effect_param_contains?: {
+            key: string;
+            value_contains: string;
+        } | undefined;
+        trigger_watches?: {
+            type?: string | undefined;
+            modifier?: string | undefined;
+        } | undefined;
+        cmc_max?: number | undefined;
+        names?: string[] | undefined;
+        label?: string | undefined;
+        trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
         type_line_contains?: string | undefined;
         name_contains?: string | undefined;
         oracle_text_contains?: string | undefined;
-        category?: string | undefined;
         colors_include?: string[] | undefined;
         cmc_min?: number | undefined;
-        cmc_max?: number | undefined;
-        names?: string[] | undefined;
-        oracle_ids?: string[] | undefined;
-        arena_grp_ids?: number[] | undefined;
         color_identity_subset_of?: string[] | undefined;
         legal_in?: string | undefined;
-        limit?: number | undefined;
     }>, "many">>;
     detail: z.ZodOptional<z.ZodEnum<["brief", "summary", "full"]>>;
     include_draft_stats: z.ZodOptional<z.ZodBoolean>;

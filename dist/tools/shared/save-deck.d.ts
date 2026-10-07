@@ -4,9 +4,9 @@ import { McpContext } from '../types.js';
 import 'mongodb';
 import '../../functions/reference/deck-validation.js';
 import '../../functions/query/cards.js';
+import 'zod';
 import '../../functions/reference/bracket-facts.js';
 import '../../functions/query/combos.js';
-import 'zod';
 
 interface SaveDeckInput {
     decklist_text: string;

@@ -2,7 +2,7 @@ import { queryCards } from "../../functions/query/cards.js";
 import { validateDeck } from "../../functions/reference/deck-validation.js";
 import { gatherDeckFacts } from "../../functions/reference/bracket-facts.js";
 import { parseDecklistText } from "../../functions/parsing/decklist-parser.js";
-async function analyzeDecklist(readDb, decklist_text, priceSource = "cardkingdom") {
+async function analyzeDecklist(readDb, decklist_text, priceSource = "tcgplayer") {
   const { commanderNames, deckEntries } = parseDecklistText(decklist_text);
   if (!commanderNames.length || !deckEntries.length) {
     throw new Error("Couldn't parse a commander and deck from the decklist -- check the 'Commander' / 'Deck' section headers and '<qty> <name>' line formatting.");

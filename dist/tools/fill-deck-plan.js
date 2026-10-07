@@ -66,7 +66,7 @@ const fillDeckPlanTool = {
   description: "Build AND save a whole deck in ONE call (call deck_plan_guide first). Send only the THEME slots ({ label, count, ...filters }) plus deck_name, wincon_summary, general_strategy, bracket_estimate. The server fills ramp/draw/removal/wipes and card types to the deck's targets (counting what theme cards already do), adds lands to exactly the deck size, applies colors/legality/budget/exclusions, saves, and returns the link with a compact summary.",
   inputSchema,
   handler: async (args, ctx) => {
-    const priceSource = await ctx.getPriceSourcePreference?.() ?? "cardkingdom";
+    const priceSource = await ctx.getPriceSourcePreference?.() ?? "tcgplayer";
     const preferredPrinting = await ctx.getPreferredPrintingPreference?.() ?? "most_recent";
     const text = (body) => ({ content: [{ type: "text", text: typeof body === "string" ? body : JSON.stringify(body) }] });
     let promptId = args.prompt_id ? args.prompt_id.replace(/^#/, "").trim().toLowerCase() : null;

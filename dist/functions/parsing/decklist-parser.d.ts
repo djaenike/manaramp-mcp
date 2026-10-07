@@ -1,6 +1,8 @@
 import { DeckEntry } from '../reference/deck-validation.js';
 import '../query/cards.js';
 import 'mongodb';
+import '../../tools/types.js';
+import 'zod';
 
 /**
  * functions/decklist-parser.ts -- pure text parsing, no Mongo access. Moved from playtest/state.ts

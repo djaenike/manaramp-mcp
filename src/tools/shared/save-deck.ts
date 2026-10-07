@@ -35,7 +35,7 @@ type SaveDeckResult =
   | { saved: false; error?: string; analysis?: DeckAnalysis; priceSource: string };
 
 async function saveDecklist(ctx: McpContext, input: SaveDeckInput): Promise<SaveDeckResult> {
-  const priceSource = (await ctx.getPriceSourcePreference?.()) ?? "cardkingdom";
+  const priceSource = (await ctx.getPriceSourcePreference?.()) ?? "tcgplayer";
 
   // No explicit deck_id but the list came from a prompt (2026-10-04): save into the prompt's own deck
   // (its rebuild target, or the website's empty placeholder) when it still exists. Without this, a
