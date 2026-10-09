@@ -44,19 +44,19 @@ declare const inputSchema: {
         use_synergies: z.ZodOptional<z.ZodBoolean>;
         use_combos: z.ZodOptional<z.ZodBoolean>;
     }, "strip", z.ZodTypeAny, {
-        theme?: string | undefined;
         colors?: string[] | undefined;
         max_price_usd?: number | undefined;
         bracket?: number | undefined;
+        theme?: string | undefined;
         restrictions?: string | undefined;
         build_style?: "original" | "community" | undefined;
         use_synergies?: boolean | undefined;
         use_combos?: boolean | undefined;
     }, {
-        theme?: string | undefined;
         colors?: string[] | undefined;
         max_price_usd?: number | undefined;
         bracket?: number | undefined;
+        theme?: string | undefined;
         restrictions?: string | undefined;
         build_style?: "original" | "community" | undefined;
         use_synergies?: boolean | undefined;
@@ -115,27 +115,27 @@ declare const inputSchema: {
         label: string;
         count: number;
         sort?: "cmc" | "varied" | "price" | "synergy" | undefined;
-        category?: string | undefined;
         max_price_usd?: number | undefined;
-        effect_in?: string[] | undefined;
-        roles_any?: string[] | undefined;
         trigger_event?: string | undefined;
         cost_contains?: {
             kind: string;
             arg?: string | undefined;
         } | undefined;
-        effects_all?: string[] | undefined;
-        effect_param_contains?: {
-            key: string;
-            value_contains: string;
-        } | undefined;
         trigger_watches?: {
             type?: string | undefined;
             modifier?: string | undefined;
         } | undefined;
+        effect_in?: string[] | undefined;
+        roles_any?: string[] | undefined;
+        category?: string | undefined;
+        effect_param_contains?: {
+            key: string;
+            value_contains: string;
+        } | undefined;
+        effects_all?: string[] | undefined;
         cmc_max?: number | undefined;
         copies?: number | undefined;
-        trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
+        trigger_kind?: "triggered" | "cast" | "activate" | "static" | "replacement" | undefined;
         type_line_contains?: string | undefined;
         name_contains?: string | undefined;
         oracle_text_contains?: string | undefined;
@@ -145,27 +145,27 @@ declare const inputSchema: {
         label: string;
         count: number;
         sort?: "cmc" | "varied" | "price" | "synergy" | undefined;
-        category?: string | undefined;
         max_price_usd?: number | undefined;
-        effect_in?: string[] | undefined;
-        roles_any?: string[] | undefined;
         trigger_event?: string | undefined;
         cost_contains?: {
             kind: string;
             arg?: string | undefined;
         } | undefined;
-        effects_all?: string[] | undefined;
-        effect_param_contains?: {
-            key: string;
-            value_contains: string;
-        } | undefined;
         trigger_watches?: {
             type?: string | undefined;
             modifier?: string | undefined;
         } | undefined;
+        effect_in?: string[] | undefined;
+        roles_any?: string[] | undefined;
+        category?: string | undefined;
+        effect_param_contains?: {
+            key: string;
+            value_contains: string;
+        } | undefined;
+        effects_all?: string[] | undefined;
         cmc_max?: number | undefined;
         copies?: number | undefined;
-        trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
+        trigger_kind?: "triggered" | "cast" | "activate" | "static" | "replacement" | undefined;
         type_line_contains?: string | undefined;
         name_contains?: string | undefined;
         oracle_text_contains?: string | undefined;

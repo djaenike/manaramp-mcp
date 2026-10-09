@@ -97,7 +97,9 @@ async function gatherDeckFacts(db, commanderNames, cardNames, cards) {
     ),
     // Same as manaramp's src/lib/server/cards/ability-flags.ts's CARD_DRAW_FILTERS/REMOVAL_FILTERS.
     card_draw_found: byEffect({ effect: "Draw" }),
-    removal_found: byEffect({ effect: "Destroy" }, { effect: "Exile" }, { effect: "DealDamage" })
+    // Fight added 2026-10-09 (matches manaramp's REMOVAL_FILTERS) -- "your creature fights theirs" is
+    // green's removal, and was invisible here (Prey Upon, Primal Might, Earth Rumble...).
+    removal_found: byEffect({ effect: "Destroy" }, { effect: "Exile" }, { effect: "DealDamage" }, { effect: "Fight" })
   };
 }
 export {

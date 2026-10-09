@@ -74,31 +74,31 @@ declare const inputSchema: {
         limit: z.ZodOptional<z.ZodNumber>;
         label: z.ZodOptional<z.ZodString>;
     }, "strip", z.ZodTypeAny, {
-        category?: string | undefined;
-        arena_grp_ids?: number[] | undefined;
         max_price_usd?: number | undefined;
-        limit?: number | undefined;
         oracle_ids?: string[] | undefined;
-        effect_in?: string[] | undefined;
-        roles_any?: string[] | undefined;
         trigger_event?: string | undefined;
         cost_contains?: {
             kind: string;
             arg?: string | undefined;
         } | undefined;
-        effects_all?: string[] | undefined;
-        effect_param_contains?: {
-            key: string;
-            value_contains: string;
-        } | undefined;
         trigger_watches?: {
             type?: string | undefined;
             modifier?: string | undefined;
         } | undefined;
-        cmc_max?: number | undefined;
+        effect_in?: string[] | undefined;
+        roles_any?: string[] | undefined;
+        category?: string | undefined;
+        effect_param_contains?: {
+            key: string;
+            value_contains: string;
+        } | undefined;
         names?: string[] | undefined;
+        effects_all?: string[] | undefined;
+        arena_grp_ids?: number[] | undefined;
+        limit?: number | undefined;
+        cmc_max?: number | undefined;
         label?: string | undefined;
-        trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
+        trigger_kind?: "triggered" | "cast" | "activate" | "static" | "replacement" | undefined;
         type_line_contains?: string | undefined;
         name_contains?: string | undefined;
         oracle_text_contains?: string | undefined;
@@ -107,31 +107,31 @@ declare const inputSchema: {
         color_identity_subset_of?: string[] | undefined;
         legal_in?: string | undefined;
     }, {
-        category?: string | undefined;
-        arena_grp_ids?: number[] | undefined;
         max_price_usd?: number | undefined;
-        limit?: number | undefined;
         oracle_ids?: string[] | undefined;
-        effect_in?: string[] | undefined;
-        roles_any?: string[] | undefined;
         trigger_event?: string | undefined;
         cost_contains?: {
             kind: string;
             arg?: string | undefined;
         } | undefined;
-        effects_all?: string[] | undefined;
-        effect_param_contains?: {
-            key: string;
-            value_contains: string;
-        } | undefined;
         trigger_watches?: {
             type?: string | undefined;
             modifier?: string | undefined;
         } | undefined;
-        cmc_max?: number | undefined;
+        effect_in?: string[] | undefined;
+        roles_any?: string[] | undefined;
+        category?: string | undefined;
+        effect_param_contains?: {
+            key: string;
+            value_contains: string;
+        } | undefined;
         names?: string[] | undefined;
+        effects_all?: string[] | undefined;
+        arena_grp_ids?: number[] | undefined;
+        limit?: number | undefined;
+        cmc_max?: number | undefined;
         label?: string | undefined;
-        trigger_kind?: "cast" | "activate" | "triggered" | "static" | "replacement" | undefined;
+        trigger_kind?: "triggered" | "cast" | "activate" | "static" | "replacement" | undefined;
         type_line_contains?: string | undefined;
         name_contains?: string | undefined;
         oracle_text_contains?: string | undefined;
